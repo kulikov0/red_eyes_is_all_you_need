@@ -73,4 +73,4 @@ OK   tensor 34  addr=127    data=0x5c
 OK   tensor 35  addr=0      data=0xcf  scale=0x3b3fa637
 OK   tensor 35  addr=127    data=0xaa
 *** ALL 72 TESTS PASSED ***
-$finish called at time : 1456 ns : File "/home/user/red_eyes_is_all_you_need/tb/tb_weight_store.v" Line 148
+$finish called at time : 1456 ns : File "/home/user/red_eyes_is_all_you_need/tb/tb_weight_store.v" Line 147
