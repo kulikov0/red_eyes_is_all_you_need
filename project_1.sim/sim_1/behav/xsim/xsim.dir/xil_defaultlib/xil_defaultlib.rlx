@@ -1,0 +1,12 @@
+0.7
+2020.2
+Nov 14 2025
+12:36:23
+/home/user/red_eyes_is_all_you_need/project_1.sim/sim_1/behav/xsim/glbl.v,1756381829,verilog,,,,glbl,,,,,,,,
+/home/user/red_eyes_is_all_you_need/rtl/matvec_int8.v,1772099833,verilog,,/home/user/red_eyes_is_all_you_need/tb/tb_matvec_int8.v,,matvec_int8,,,../../../../../Xilinx/2025.2/data/rsb/busdef;../../../../rtl,,,,,
+/home/user/red_eyes_is_all_you_need/rtl/weight_rom.v,1772097036,verilog,,/home/user/red_eyes_is_all_you_need/rtl/weight_store.v,,weight_rom,,,../../../../../Xilinx/2025.2/data/rsb/busdef;../../../../rtl,,,,,
+/home/user/red_eyes_is_all_you_need/rtl/weight_rom_small.v,1772097039,verilog,,/home/user/red_eyes_is_all_you_need/rtl/weight_store.v,,weight_rom_small,,,../../../../../Xilinx/2025.2/data/rsb/busdef;../../../../rtl,,,,,
+/home/user/red_eyes_is_all_you_need/rtl/weight_scales.vh,1772123737,verilog,,,,,,,,,,,,
+/home/user/red_eyes_is_all_you_need/rtl/weight_store.v,1772123922,verilog,,/home/user/red_eyes_is_all_you_need/tb/tb_weight_store.v,/home/user/red_eyes_is_all_you_need/rtl/weight_scales.vh,weight_store,,,../../../../../Xilinx/2025.2/data/rsb/busdef;../../../../rtl,,,,,
+/home/user/red_eyes_is_all_you_need/tb/tb_matvec_int8.v,1772120989,verilog,,,,tb_matvec_int8,,,../../../../../Xilinx/2025.2/data/rsb/busdef;../../../../rtl,,,,,
+/home/user/red_eyes_is_all_you_need/tb/tb_weight_store.v,1772124629,verilog,,,,tb_weight_store,,,../../../../../Xilinx/2025.2/data/rsb/busdef;../../../../rtl,,,,,

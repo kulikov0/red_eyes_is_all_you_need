@@ -1,0 +1,151 @@
+`timescale 1ns / 1ps
+
+module tb_weight_store;
+
+    reg         clk;
+    reg  [ 5:0] tensor_sel;
+    reg  [15:0] addr;
+    wire [ 7:0] data;
+    wire [31:0] scale;
+
+    weight_store uut (
+        .clk        (clk),
+        .tensor_sel (tensor_sel),
+        .addr       (addr),
+        .data       (data),
+        .scale      (scale)
+    );
+
+    // Clock: 10 ns period
+    initial clk = 0;
+    always #5 clk = ~clk;
+
+    // Reference arrays: [tensor_sel] - expected first byte, last byte, last addr
+    reg [7:0]  exp_first [0:35];
+    reg [7:0]  exp_last  [0:35];
+    reg [15:0] last_addr [0:35];
+
+    integer errors;
+    integer i;
+    integer fd;
+
+    // Do not forget to update these expected values if you 
+    // want to train a new model
+    initial begin
+        // Expected first bytes
+        exp_first[ 0] = 8'h67;  exp_first[ 1] = 8'hfa;
+        exp_first[ 2] = 8'h5c;  exp_first[ 3] = 8'hcb;
+        exp_first[ 4] = 8'hfb;  exp_first[ 5] = 8'he8;
+        exp_first[ 6] = 8'h69;  exp_first[ 7] = 8'h07;
+        exp_first[ 8] = 8'hf7;  exp_first[ 9] = 8'h12;
+        exp_first[10] = 8'h62;  exp_first[11] = 8'hc5;
+        exp_first[12] = 8'h00;  exp_first[13] = 8'hf1;
+        exp_first[14] = 8'h72;  exp_first[15] = 8'heb;
+        exp_first[16] = 8'hec;  exp_first[17] = 8'h07;
+        exp_first[18] = 8'h5d;  exp_first[19] = 8'hee;
+        exp_first[20] = 8'hf9;  exp_first[21] = 8'h00;
+        exp_first[22] = 8'h74;  exp_first[23] = 8'hb5;
+        exp_first[24] = 8'hfc;  exp_first[25] = 8'hf9;
+        exp_first[26] = 8'h74;  exp_first[27] = 8'hae;
+        exp_first[28] = 8'hfd;  exp_first[29] = 8'h0f;
+        exp_first[30] = 8'h77;  exp_first[31] = 8'hac;
+        exp_first[32] = 8'h26;  exp_first[33] = 8'h19;
+        exp_first[34] = 8'h64;  exp_first[35] = 8'hcf;
+
+        // Expected last bytes
+        exp_last[ 0] = 8'h09;  exp_last[ 1] = 8'h11;
+        exp_last[ 2] = 8'h5c;  exp_last[ 3] = 8'he3;
+        exp_last[ 4] = 8'h0c;  exp_last[ 5] = 8'h2a;
+        exp_last[ 6] = 8'h71;  exp_last[ 7] = 8'hca;
+        exp_last[ 8] = 8'hee;  exp_last[ 9] = 8'h10;
+        exp_last[10] = 8'h66;  exp_last[11] = 8'h01;
+        exp_last[12] = 8'hf8;  exp_last[13] = 8'h05;
+        exp_last[14] = 8'h73;  exp_last[15] = 8'h06;
+        exp_last[16] = 8'hf5;  exp_last[17] = 8'hfb;
+        exp_last[18] = 8'h62;  exp_last[19] = 8'hf9;
+        exp_last[20] = 8'hff;  exp_last[21] = 8'h01;
+        exp_last[22] = 8'h72;  exp_last[23] = 8'hf7;
+        exp_last[24] = 8'hef;  exp_last[25] = 8'hf7;
+        exp_last[26] = 8'h78;  exp_last[27] = 8'h27;
+        exp_last[28] = 8'h0b;  exp_last[29] = 8'h25;
+        exp_last[30] = 8'h78;  exp_last[31] = 8'h9b;
+        exp_last[32] = 8'hf8;  exp_last[33] = 8'h03;
+        exp_last[34] = 8'h5c;  exp_last[35] = 8'haa;
+
+        // Last addresses (depth - 1)
+        last_addr[ 0] = 16'd32767;  last_addr[ 1] = 16'd32767;
+        last_addr[ 2] = 16'd127;    last_addr[ 3] = 16'd127;
+        last_addr[ 4] = 16'd49151;  last_addr[ 5] = 16'd16383;
+        last_addr[ 6] = 16'd127;    last_addr[ 7] = 16'd127;
+        last_addr[ 8] = 16'd65535;  last_addr[ 9] = 16'd65535;
+        last_addr[10] = 16'd127;    last_addr[11] = 16'd127;
+        last_addr[12] = 16'd49151;  last_addr[13] = 16'd16383;
+        last_addr[14] = 16'd127;    last_addr[15] = 16'd127;
+        last_addr[16] = 16'd65535;  last_addr[17] = 16'd65535;
+        last_addr[18] = 16'd127;    last_addr[19] = 16'd127;
+        last_addr[20] = 16'd49151;  last_addr[21] = 16'd16383;
+        last_addr[22] = 16'd127;    last_addr[23] = 16'd127;
+        last_addr[24] = 16'd65535;  last_addr[25] = 16'd65535;
+        last_addr[26] = 16'd127;    last_addr[27] = 16'd127;
+        last_addr[28] = 16'd49151;  last_addr[29] = 16'd16383;
+        last_addr[30] = 16'd127;    last_addr[31] = 16'd127;
+        last_addr[32] = 16'd65535;  last_addr[33] = 16'd65535;
+        last_addr[34] = 16'd127;    last_addr[35] = 16'd127;
+
+        errors = 0;
+
+        // Open log file
+        fd = $fopen("/home/user/red_eyes_is_all_you_need/logs/tb_weight_store.log", "w");
+
+        // Wait for ROMs to initialize
+        #20;
+
+        $display("=== Weight Store Testbench ===");
+        $fwrite(fd, "=== Weight Store Testbench ===\n");
+
+        for (i = 0; i < 36; i = i + 1) begin
+            // Test first byte (addr 0)
+            tensor_sel = i[5:0];
+            addr       = 16'd0;
+            @(posedge clk);
+            @(posedge clk);
+            #1;
+
+            if (data !== exp_first[i]) begin
+                $display("FAIL tensor %0d first: got 0x%02x, expected 0x%02x", i, data, exp_first[i]);
+                $fwrite(fd, "FAIL tensor %0d first: got 0x%02x, expected 0x%02x\n", i, data, exp_first[i]);
+                errors = errors + 1;
+            end else begin
+                $display("OK   tensor %2d  addr=0      data=0x%02x  scale=0x%08x", i, data, scale);
+                $fwrite(fd, "OK   tensor %0d  addr=0      data=0x%02x  scale=0x%08x\n", i, data, scale);
+            end
+
+            // Test last byte (addr = last_addr)
+            addr = last_addr[i];
+            @(posedge clk);
+            @(posedge clk);
+            #1;
+
+            if (data !== exp_last[i]) begin
+                $display("FAIL tensor %0d last:  got 0x%02x, expected 0x%02x (addr=%0d)", i, data, exp_last[i], last_addr[i]);
+                $fwrite(fd, "FAIL tensor %0d last:  got 0x%02x, expected 0x%02x (addr=%0d)\n", i, data, exp_last[i], last_addr[i]);
+                errors = errors + 1;
+            end else begin
+                $display("OK   tensor %2d  addr=%-5d  data=0x%02x", i, last_addr[i], data);
+                $fwrite(fd, "OK   tensor %0d  addr=%0d  data=0x%02x\n", i, last_addr[i], data);
+            end
+        end
+
+        if (errors == 0) begin
+            $display("*** ALL %0d TESTS PASSED ***", 72);
+            $fwrite(fd, "*** ALL %0d TESTS PASSED ***\n", 72);
+        end else begin
+            $display("*** %0d ERRORS ***", errors);
+            $fwrite(fd, "*** %0d ERRORS ***\n", errors);
+        end
+
+        $fclose(fd);
+        $finish;
+    end
+
+endmodule

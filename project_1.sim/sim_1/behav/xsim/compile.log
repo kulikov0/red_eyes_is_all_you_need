@@ -1,0 +1,6 @@
+INFO: [VRFC 10-2263] Analyzing Verilog file "/home/user/red_eyes_is_all_you_need/rtl/weight_rom.v" into library xil_defaultlib
+INFO: [VRFC 10-311] analyzing module weight_rom
+INFO: [VRFC 10-2263] Analyzing Verilog file "/home/user/red_eyes_is_all_you_need/rtl/weight_store.v" into library xil_defaultlib
+INFO: [VRFC 10-311] analyzing module weight_store
+INFO: [VRFC 10-2263] Analyzing Verilog file "/home/user/red_eyes_is_all_you_need/tb/tb_weight_store.v" into library xil_defaultlib
+INFO: [VRFC 10-311] analyzing module tb_weight_store
