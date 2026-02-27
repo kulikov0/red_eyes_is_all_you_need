@@ -18,14 +18,14 @@ LOG = os.path.join(PROJ, "logs", "tb_inv_sqrt.log")
 D_W = 14
 
 
+# Load 512-entry LUT from hex file
 def load_lut(path):
-    """Load 512-entry LUT from hex file."""
     with open(path) as f:
         return [int(line.strip(), 16) for line in f if line.strip()]
 
 
+# Simulate the hardware inv_sqrt for a given input d
 def golden_inv_sqrt(d, lut):
-    """Simulate the hardware inv_sqrt for a given input d."""
     if d == 0:
         return 0xFFFF
 
