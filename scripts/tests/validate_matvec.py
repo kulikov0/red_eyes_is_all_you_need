@@ -12,7 +12,7 @@ import re
 import os
 import sys
 
-PROJ = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+PROJ = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 BIN = os.path.join(PROJ, "scripts", "train", "weights_int8.bin")
 LOG = os.path.join(PROJ, "logs", "tb_matvec_int8.log")
 
@@ -61,8 +61,8 @@ def clamp8(v):
     if v < -128: return -128
     return v
 
+# Wrap to 24-bit signed, same as Verilog reg signed [23:0]
 def mask24(v):
-    """Wrap to 24-bit signed, same as Verilog reg signed [23:0]"""
     v &= 0xFFFFFF
     return v - 0x1000000 if v >= 0x800000 else v
 

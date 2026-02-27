@@ -1,0 +1,7 @@
+Running: xsim.dir/inv_sqrt_behav/xsimk -simmode gui -wdb inv_sqrt_behav.wdb -simrunnum 0 -socket 40103
+Design successfully loaded
+Design Loading Memory Usage: 620392 KB (Peak: 620392 KB)
+Design Loading CPU Usage: 1110 ms
+Simulation completed
+Simulation Memory Usage: 702736 KB (Peak: 759552 KB)
+Simulation CPU Usage: 1120 ms

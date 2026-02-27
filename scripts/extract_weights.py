@@ -55,8 +55,8 @@ def verilog_param_name(stem):
     # Convert stem to UPPER_CASE Verilog localparam name for scale
     return "SCALE_" + stem.upper()
 
+# Generate tb/tb_weight_store.v with expected values derived from tensor data
 def generate_tb_weight_store(tensors):
-    """Generate tb/tb_weight_store.v with expected values derived from tensor data."""
     n = len(tensors)
     log_path = f"{VIVADO_BASE}/logs/tb_weight_store.log"
 
@@ -72,7 +72,7 @@ def generate_tb_weight_store(tensors):
         lines_last.append(f"exp_last[{i:2d}] = 8'h{lb:02x};")
         lines_addr.append(f"last_addr[{i:2d}] = 16'd{la};")
 
-    def paired(items, indent="        "):
+    def paired(items, indent="    "):
         out = []
         for j in range(0, len(items), 2):
             if j + 1 < len(items):
@@ -86,98 +86,98 @@ def generate_tb_weight_store(tensors):
 
 module tb_weight_store;
 
-    reg         clk;
-    reg  [ 5:0] tensor_sel;
-    reg  [15:0] addr;
-    wire [ 7:0] data;
-    wire [31:0] scale;
+  reg         clk;
+  reg  [ 5:0] tensor_sel;
+  reg  [15:0] addr;
+  wire [ 7:0] data;
+  wire [31:0] scale;
 
-    weight_store uut (
-        .clk        (clk),
-        .tensor_sel (tensor_sel),
-        .addr       (addr),
-        .data       (data),
-        .scale      (scale)
-    );
+  weight_store uut (
+    .clk_i       (clk),
+    .tensor_sel_i(tensor_sel),
+    .addr_i      (addr),
+    .data_o      (data),
+    .scale_o     (scale)
+  );
 
-    // Clock: 10 ns period
-    initial clk = 0;
-    always #5 clk = ~clk;
+  // Clock: 10 ns period
+  initial clk = 1'b0;
+  always #5 clk = ~clk;
 
-    // Reference arrays: [tensor_sel] - expected first byte, last byte, last addr
-    reg [7:0]  exp_first [0:{n-1}];
-    reg [7:0]  exp_last  [0:{n-1}];
-    reg [15:0] last_addr [0:{n-1}];
+  // Reference arrays: [tensor_sel] - expected first byte, last byte, last addr
+  reg [7:0]  exp_first [0:{n-1}];
+  reg [7:0]  exp_last  [0:{n-1}];
+  reg [15:0] last_addr [0:{n-1}];
 
-    integer errors;
-    integer i;
-    integer fd;
+  integer errors;
+  integer i;
+  integer fd;
 
-    initial begin
-        // Expected first bytes
+  initial begin
+    // Expected first bytes
 {paired(lines_first)}
 
-        // Expected last bytes
+    // Expected last bytes
 {paired(lines_last)}
 
-        // Last addresses (depth - 1)
+    // Last addresses (depth - 1)
 {paired(lines_addr)}
 
-        errors = 0;
+    errors = 0;
 
-        // Open log file
-        fd = $fopen("{log_path}", "w");
+    // Open log file
+    fd = $fopen("{log_path}", "w");
 
-        // Wait for ROMs to initialize
-        #20;
+    // Wait for ROMs to initialize
+    #20;
 
-        $display("=== Weight Store Testbench ===");
-        $fwrite(fd, "=== Weight Store Testbench ===\\n");
+    $display("=== Weight Store Testbench ===");
+    $fwrite(fd, "=== Weight Store Testbench ===\\n");
 
-        for (i = 0; i < {n}; i = i + 1) begin
-            // Test first byte (addr 0)
-            tensor_sel = i[5:0];
-            addr       = 16'd0;
-            @(posedge clk);
-            @(posedge clk);
-            #1;
+    for (i = 0; i < {n}; i = i + 1) begin
+      // Test first byte (addr 0)
+      tensor_sel = i[5:0];
+      addr       = 16'd0;
+      @(posedge clk);
+      @(posedge clk);
+      #1;
 
-            if (data !== exp_first[i]) begin
-                $display("FAIL tensor %0d first: got 0x%02x, expected 0x%02x", i, data, exp_first[i]);
-                $fwrite(fd, "FAIL tensor %0d first: got 0x%02x, expected 0x%02x\\n", i, data, exp_first[i]);
-                errors = errors + 1;
-            end else begin
-                $display("OK   tensor %2d  addr=0      data=0x%02x  scale=0x%08x", i, data, scale);
-                $fwrite(fd, "OK   tensor %0d  addr=0      data=0x%02x  scale=0x%08x\\n", i, data, scale);
-            end
+      if (data !== exp_first[i]) begin
+        $display("FAIL tensor %0d first: got 0x%02x, expected 0x%02x", i, data, exp_first[i]);
+        $fwrite(fd, "FAIL tensor %0d first: got 0x%02x, expected 0x%02x\\n", i, data, exp_first[i]);
+        errors = errors + 1;
+      end else begin
+        $display("OK   tensor %0d  addr=0  data=0x%02x  scale=0x%08x", i, data, scale);
+        $fwrite(fd, "OK   tensor %0d  addr=0  data=0x%02x  scale=0x%08x\\n", i, data, scale);
+      end
 
-            // Test last byte (addr = last_addr)
-            addr = last_addr[i];
-            @(posedge clk);
-            @(posedge clk);
-            #1;
+      // Test last byte (addr = last_addr)
+      addr = last_addr[i];
+      @(posedge clk);
+      @(posedge clk);
+      #1;
 
-            if (data !== exp_last[i]) begin
-                $display("FAIL tensor %0d last:  got 0x%02x, expected 0x%02x (addr=%0d)", i, data, exp_last[i], last_addr[i]);
-                $fwrite(fd, "FAIL tensor %0d last:  got 0x%02x, expected 0x%02x (addr=%0d)\\n", i, data, exp_last[i], last_addr[i]);
-                errors = errors + 1;
-            end else begin
-                $display("OK   tensor %2d  addr=%-5d  data=0x%02x", i, last_addr[i], data);
-                $fwrite(fd, "OK   tensor %0d  addr=%0d  data=0x%02x\\n", i, last_addr[i], data);
-            end
-        end
-
-        if (errors == 0) begin
-            $display("*** ALL %0d TESTS PASSED ***", {n * 2});
-            $fwrite(fd, "*** ALL %0d TESTS PASSED ***\\n", {n * 2});
-        end else begin
-            $display("*** %0d ERRORS ***", errors);
-            $fwrite(fd, "*** %0d ERRORS ***\\n", errors);
-        end
-
-        $fclose(fd);
-        $finish;
+      if (data !== exp_last[i]) begin
+        $display("FAIL tensor %0d last:  got 0x%02x, expected 0x%02x (addr=%0d)", i, data, exp_last[i], last_addr[i]);
+        $fwrite(fd, "FAIL tensor %0d last:  got 0x%02x, expected 0x%02x (addr=%0d)\\n", i, data, exp_last[i], last_addr[i]);
+        errors = errors + 1;
+      end else begin
+        $display("OK   tensor %0d  addr=%0d  data=0x%02x", i, last_addr[i], data);
+        $fwrite(fd, "OK   tensor %0d  addr=%0d  data=0x%02x\\n", i, last_addr[i], data);
+      end
     end
+
+    if (errors == 0) begin
+      $display("*** ALL %0d TESTS PASSED ***", {n * 2});
+      $fwrite(fd, "*** ALL %0d TESTS PASSED ***\\n", {n * 2});
+    end else begin
+      $display("*** %0d ERRORS ***", errors);
+      $fwrite(fd, "*** %0d ERRORS ***\\n", errors);
+    end
+
+    $fclose(fd);
+    $finish;
+  end
 
 endmodule
 """

@@ -12,7 +12,7 @@ import re
 import os
 import sys
 
-PROJ = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+PROJ = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 BIN = os.path.join(PROJ, "scripts", "train", "weights_int8.bin")
 LOG = os.path.join(PROJ, "logs", "tb_weight_store.log")
 
