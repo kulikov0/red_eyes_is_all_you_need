@@ -1,6 +1,4 @@
 `timescale 1ns / 1ps
-// Testbench for inv_sqrt module (LOD-LUT-Shift)
-// Expected values computed with gen_inv_sqrt_lut.py golden model
 
 module tb_inv_sqrt;
 

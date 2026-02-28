@@ -215,10 +215,10 @@ def analyze_test(test, lut0, lut1):
         elif j == 4:
             print(f"  {'...':>5s}")
 
-    print(f"\n  Output sum:     {test['sum']} (ideal 32768, delta {test['sum'] - 32768:+d})")
-    print(f"  Max abs error:  {max_abs_err:.6f} (vs ideal float softmax)")
-    print(f"  Mean abs error: {sum_abs_err / n:.6f}")
-    print(f"  Golden match:   {n - errors}/{n}")
+    print(f"\n  Golden match:     {n - errors}/{n}")
+    print(f"  Max abs delta:    {max_abs_err:.6f} (vs ideal float)")
+    print(f"  Mean abs delta:   {sum_abs_err / n:.6f}")
+    print(f"  Output sum:       {test['sum']} (ideal 32768, delta {test['sum'] - 32768:+d})")
     return errors
 
 

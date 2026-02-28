@@ -1,4 +1,3 @@
-`timescale 1ns / 1ps
 module matvec_int8 #(
   parameter IN_DIM  = 128,
   parameter OUT_DIM = 128

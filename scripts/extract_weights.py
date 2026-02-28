@@ -1,6 +1,6 @@
 """
 Extract int8 weights from weights_int8.bin into individual .hex files
-for Verilog $readmemh, plus weight_scales.vh and manifest.txt
+for Verilog $readmemh, plus weight_scales.vh
 
 We need weight_scales.vh because the int8 weights in the ROMs are quantized -
 they're not the actual values the neural network uses. Each tensor was scaled down
@@ -12,10 +12,6 @@ But at some point after accumulation it needs to convert back to real values (or
 for the next layer.
 Without weight_scales.vh, the hardware would have no way to know what the int8 numbers actually represent.
 The weights would just be meaningless bytes.
-
-We need manifest.txt for debugging and bookkeeping. When something goes wrong - a tensor loads incorrectly,
-a simulation fails, or BRAM utilization doesn't match expectations - we need a single place to look up which tensor
-is which index, how big it is, what file it maps to, and what scale it uses.
 
 Binary format:
   Global header: 8-byte magic "TFPGA001" + uint32 num_tensors
@@ -262,15 +258,6 @@ def main():
         sys.exit(1)
     else:
         print(f"\nAll {len(tensors)} hex files verified")
-
-    manifest_path = os.path.join(MEM, "manifest.txt")
-    with open(manifest_path, "w") as mf:
-        mf.write(f"{'#':>3s}  {'Name':40s}  {'Shape':20s}  {'Size':>8s}  {'Scale':>12s}  {'Hex File'}\n")
-        mf.write("-" * 110 + "\n")
-        for t in tensors:
-            shape_str = "x".join(str(s) for s in t["shape"])
-            mf.write(f"{t['index']:3d}  {t['name']:40s}  {shape_str:20s}  {t['size']:8d}  {t['scale']:12.6f}  {t['hex_file']}\n")
-    print(f"Wrote {manifest_path}")
 
     vh_path = os.path.join(RTL, "weight_scales.vh")
     with open(vh_path, "w") as vf:

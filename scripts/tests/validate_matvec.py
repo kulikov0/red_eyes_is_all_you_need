@@ -105,7 +105,7 @@ if __name__ == "__main__":
 
     if not os.path.exists(LOG):
         print(f"\nLog not found: {LOG}")
-        print("Run tb_matvec_int8 simulation first")
+        print("Run tb_matvec_int8 simulation first (Tcl: 'run all')")
         sys.exit(1)
 
     print(f"Reading: {LOG}\n")
@@ -161,12 +161,12 @@ if __name__ == "__main__":
 
     n = len(xsim)
     print()
-    print(f"Golden match:      {128 - gold_errors}/128  (hardware model)")
-    print(f"  Max abs delta:   {max_g_delta}")
-    print(f"  Mean abs delta:  {sum_g_delta / n:.3f}")
-    print(f"Ref match:         {128 - ref_errors}/128  (int8 matmul)")
-    print(f"  Max abs delta:   {max_r_delta}")
-    print(f"  Mean abs delta:  {sum_r_delta / n:.3f}")
+    print(f"Golden match:       {128 - gold_errors}/128  (hardware model)")
+    print(f"  Max abs delta:    {max_g_delta}")
+    print(f"  Mean abs delta:   {sum_g_delta / n:.3f}")
+    print(f"Ref match:          {128 - ref_errors}/128  (int8 matmul)")
+    print(f"  Max abs delta:    {max_r_delta}")
+    print(f"  Mean abs delta:   {sum_r_delta / n:.3f}")
     print()
     if gold_errors == 0:
         print(f"PASSED - all {n} outputs match golden model")

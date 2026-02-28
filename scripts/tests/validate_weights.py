@@ -120,8 +120,9 @@ if __name__ == "__main__":
             print(f"OK tensor {idx:2d}  addr={entry['addr']:<5d}  data=0x{entry['data']:02x}")
 
     print()
+    print(f"Golden match:       {len(xsim) - errors}/{len(xsim)}")
     if errors == 0:
-        print(f"PASSED - all {len(xsim)} checks match.")
+        print(f"PASSED - all {len(xsim)} checks match")
     else:
-        print(f"FAILED - {errors} mismatches out of {len(xsim)} checks.")
+        print(f"FAILED - {errors} mismatches out of {len(xsim)} checks")
     sys.exit(0 if errors == 0 else 1)

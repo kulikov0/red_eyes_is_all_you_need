@@ -1,4 +1,5 @@
 `timescale 1ns / 1ps
+
 module tb_matvec_int8;
 
   reg clk = 1'b0;

@@ -94,11 +94,13 @@ if __name__ == "__main__":
     xsim = parse_log(LOG)
 
     if not xsim:
-        print("No OK/FAIL lines found in log.")
+        print("No OK/FAIL lines found in log")
         print("Set tb_inv_sqrt as sim top, then 'run all'")
         sys.exit(1)
 
     errors = 0
+    max_abs_delta = 0
+    sum_abs_delta = 0
     print(f"{'d':>6s}  {'xsim':>6s}  {'golden':>6s}  {'ideal':>8s}  {'xsim_f':>8s}  {'delta':>8s}  {'err%':>6s}  {'status'}")
     print("-" * 72)
 
@@ -130,9 +132,16 @@ if __name__ == "__main__":
         else:
             status = "OK"
 
+        max_abs_delta = max(max_abs_delta, abs(delta))
+        sum_abs_delta += abs(delta)
+
         print(f"{d:6d}  {xsim_val:6d}  {gold_val:6d}  {ideal:8.5f}  {xsim_f:8.5f}  {delta:+8d}  {err_pct:6.3f}%  {status}")
 
+    n = len(xsim)
     print()
+    print(f"Golden match:       {n - errors}/{n}")
+    print(f"  Max abs delta:    {max_abs_delta}")
+    print(f"  Mean abs delta:   {sum_abs_delta / n:.3f}")
     if errors == 0:
         print(f"PASSED - all {len(xsim)} checks match golden model")
     else:
