@@ -1,4 +1,0 @@
-Running: xsim.dir/tb_matvec_int8_behav/xsimk -simmode gui -wdb tb_matvec_int8_behav.wdb -simrunnum 0 -socket 49363
-Design successfully loaded
-Design Loading Memory Usage: 620380 KB (Peak: 620380 KB)
-Design Loading CPU Usage: 1200 ms

@@ -1,7 +1,0 @@
-Running: xsim.dir/tb_inv_sqrt_behav/xsimk -simmode gui -wdb tb_inv_sqrt_behav.wdb -simrunnum 0 -socket 54639
-Design successfully loaded
-Design Loading Memory Usage: 620400 KB (Peak: 620400 KB)
-Design Loading CPU Usage: 1160 ms
-Simulation completed
-Simulation Memory Usage: 703064 KB (Peak: 759560 KB)
-Simulation CPU Usage: 1180 ms
