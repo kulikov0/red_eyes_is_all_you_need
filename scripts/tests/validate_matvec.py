@@ -44,13 +44,10 @@ def parse_bin(path):
 
 
 """
-Same math as matvec_int8.v
-
-For each output row:
-  acc (24-bit signed) = sum of in_vec[col] * weight[row*128 + col]
-  out[row] = clamp( acc >> 7, -128, 127 )
-
 Testbench uses block0_attn_proj_weight (128x128) with input = all ones
+
+golden: mirrors hardware (24-bit masked accumulator, >>7 requant, clamp)
+ref:    standard int8 matmul (full-precision accumulator, >>7 requant, clamp)
 """
 
 def as_signed8(b):
@@ -73,8 +70,19 @@ def golden_matvec(tensors):
     for row in range(128):
         acc = 0
         for col in range(128):
-            # in_vec[col] = 1 for all cols (testbench fills with ones)
             acc = mask24(acc + as_signed8(raw[row * 128 + col]))
+        out.append(clamp8(acc >> 7))
+    return out
+
+# Reference int8 matmul with full-precision accumulator (no 24-bit wrap)
+def ref_int8_matvec(tensors):
+    proj = next(t for t in tensors if t["name"] == "blocks.0.attn.proj.weight")
+    raw = proj["data"]
+    out = []
+    for row in range(128):
+        acc = 0
+        for col in range(128):
+            acc += as_signed8(raw[row * 128 + col])
         out.append(clamp8(acc >> 7))
     return out
 
@@ -109,25 +117,59 @@ if __name__ == "__main__":
         sys.exit(1)
 
     golden = golden_matvec(tensors)
-    errors = 0
+    ref = ref_int8_matvec(tensors)
+    gold_errors = 0
+    ref_errors = 0
+    max_g_delta = 0
+    max_r_delta = 0
+    sum_g_delta = 0
+    sum_r_delta = 0
+
+    print(f"{'row':>5s}  {'xsim':>5s}  {'golden':>6s}  {'ref':>5s}  {'g_delta':>7s}  {'r_delta':>7s}  {'status'}")
+    print("-" * 56)
 
     for i in range(128):
         if i not in xsim:
-            print(f"MISSING out[{i}] in log")
-            errors += 1
+            print(f"{i:5d}  {'MISSING':>5s}")
+            gold_errors += 1
+            ref_errors += 1
             continue
 
         got = xsim[i]
-        exp = golden[i]
-        if got != exp:
-            print(f"MISMATCH out[{i}]: xsim={got}  expected={exp}")
-            errors += 1
-        else:
-            print(f"OK out[{i:3d}] = {got}")
+        gv = golden[i]
+        rv = ref[i]
+        g_delta = got - gv
+        r_delta = got - rv
 
+        max_g_delta = max(max_g_delta, abs(g_delta))
+        max_r_delta = max(max_r_delta, abs(r_delta))
+        sum_g_delta += abs(g_delta)
+        sum_r_delta += abs(r_delta)
+
+        if got != gv:
+            status = "GOLD_MISMATCH"
+            gold_errors += 1
+        elif got != rv:
+            status = "REF_MISMATCH"
+        else:
+            status = "OK"
+
+        if got != rv:
+            ref_errors += 1
+
+        print(f"{i:5d}  {got:5d}  {gv:6d}  {rv:5d}  {g_delta:+7d}  {r_delta:+7d}  {status}")
+
+    n = len(xsim)
     print()
-    if errors == 0:
-        print(f"PASSED - all {len(xsim)} outputs match")
+    print(f"Golden match:      {128 - gold_errors}/128  (hardware model)")
+    print(f"  Max abs delta:   {max_g_delta}")
+    print(f"  Mean abs delta:  {sum_g_delta / n:.3f}")
+    print(f"Ref match:         {128 - ref_errors}/128  (int8 matmul)")
+    print(f"  Max abs delta:   {max_r_delta}")
+    print(f"  Mean abs delta:  {sum_r_delta / n:.3f}")
+    print()
+    if gold_errors == 0:
+        print(f"PASSED - all {n} outputs match golden model")
     else:
-        print(f"FAILED - {errors} mismatches out of {len(xsim)} checks")
-    sys.exit(0 if errors == 0 else 1)
+        print(f"FAILED - {gold_errors} mismatches vs golden model")
+    sys.exit(0 if gold_errors == 0 else 1)

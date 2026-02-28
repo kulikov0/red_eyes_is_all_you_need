@@ -18,12 +18,10 @@ module tb_matvec_int8;
   reg signed [7:0] w_q [0:16383];
   initial $readmemh("/home/user/red_eyes_is_all_you_need/mem/block0_attn_proj_weight.hex", w_q);
 
-  // BRAM read - combinational (no latency)
-  // Using assign instead of always @(posedge clk) so weight_data
-  // reflects weight_addr instantly - no off-by-one timing issues
+  // BRAM read - registered (1-cycle latency, matches weight_rom.v)
   wire [13:0] weight_addr;
-  wire signed [7:0] weight_data;
-  assign weight_data = w_q[weight_addr];
+  reg signed [7:0] weight_data;
+  always @(posedge clk) weight_data <= w_q[weight_addr];
 
   // DUT instantiation
   matvec_int8 #(

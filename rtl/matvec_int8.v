@@ -17,6 +17,7 @@ module matvec_int8 #(
   reg [$clog2(IN_DIM):0]  col;
   reg [$clog2(OUT_DIM):0] row;
   reg running;
+  reg prefetch;
 
   always @(posedge clk_i) begin
 
@@ -25,6 +26,7 @@ module matvec_int8 #(
       col           <= {($clog2(IN_DIM)+1){1'b0}};
       row           <= {($clog2(OUT_DIM)+1){1'b0}};
       running       <= 1'b0;
+      prefetch      <= 1'b0;
       done_o        <= 1'b0;
       weight_addr_o <= {$clog2(OUT_DIM*IN_DIM){1'b0}};
 
@@ -32,9 +34,15 @@ module matvec_int8 #(
       acc           <= 24'd0;
       col           <= {($clog2(IN_DIM)+1){1'b0}};
       row           <= {($clog2(OUT_DIM)+1){1'b0}};
-      running       <= 1'b1;   // start immediately, no prefetch needed
+      running       <= 1'b0;
+      prefetch      <= 1'b1;   // wait 1 cycle for BRAM read latency
       done_o        <= 1'b0;
       weight_addr_o <= {$clog2(OUT_DIM*IN_DIM){1'b0}};
+
+    end else if (prefetch) begin
+      prefetch      <= 1'b0;
+      running       <= 1'b1;
+      weight_addr_o <= weight_addr_o + 1;
 
     end else if (running) begin
 

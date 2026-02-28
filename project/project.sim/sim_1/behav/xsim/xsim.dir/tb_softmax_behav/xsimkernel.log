@@ -2,3 +2,6 @@ Running: xsim.dir/tb_softmax_behav/xsimk -simmode gui -wdb tb_softmax_behav.wdb 
 Design successfully loaded
 Design Loading Memory Usage: 620448 KB (Peak: 620448 KB)
 Design Loading CPU Usage: 1120 ms
+Simulation completed
+Simulation Memory Usage: 703108 KB (Peak: 759612 KB)
+Simulation CPU Usage: 1140 ms
