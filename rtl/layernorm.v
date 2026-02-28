@@ -9,7 +9,8 @@
 //      LOAD_GAMMA(129) -> LOAD_BETA(129) -> NORM(128)
 //
 // TODO - optimize: LOAD_GAMMA can overlap with MEAN_ACC, LOAD_BETA with
-// VAR_ACC when weight_store port is free during input loading, which could reduce cycles
+// VAR_ACC when weight_store port is free during input loading, saving ~258 cycles
+// (current: 128+128+2+129+129+128 = 644; optimized: 128+128+2+128 = 386)
 
 module layernorm #(
   parameter DIM = 128
