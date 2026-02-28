@@ -1,7 +1,7 @@
 # compile verilog/system verilog design source files
 verilog xil_defaultlib  --include "../../../../../../Xilinx/2025.2/data/rsb/busdef" --include "../../../../../rtl" \
-"../../../../../rtl/inv_sqrt.v" \
-"../../../../../tb/tb_inv_sqrt.v" \
+"../../../../../rtl/softmax.v" \
+"../../../../../tb/tb_softmax.v" \
 
 # compile glbl module
 verilog xil_defaultlib "glbl.v"

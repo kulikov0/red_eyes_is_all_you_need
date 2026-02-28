@@ -36,7 +36,7 @@ TB = os.path.join(PROJ, "tb")
 # Base path used in Vivado/xsim on the build machine for $readmemh, log paths, etc.
 VIVADO_BASE = "/home/user/red_eyes_is_all_you_need"
 
-"""Convert tensor name to a clean filename stem.
+"""Convert tensor name to a clean filename stem
 e.g. 'blocks.0.attn.qkv.weight' => 'block0_attn_qkv_weight'
      'blocks.0.ff.net.0.weight' => 'block0_ff_up_weight'
      'blocks.0.ff.net.2.weight' => 'block0_ff_down_weight'

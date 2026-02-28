@@ -1,0 +1,634 @@
+================================================================================
+PAPER SUMMARY: Hardware-Oriented Approximations of Softmax and RMSNorm
+              for Efficient Transformer Inference
+Authors: Y. Kang & D. Wang
+Journal: Micromachines 2026, 17(1), 84
+DOI: https://www.mdpi.com/2072-666X/17/1/84
+================================================================================
+
+Keywords: transformer inference, hardware acceleration, FPGA, Softmax, RMSNorm
+
+================================================================================
+ABSTRACT
+================================================================================
+
+Proposes hardware-efficient approximation and acceleration methods for Softmax
+and RMSNorm operators to reduce resource cost and accelerate Transformer
+inference while maintaining model accuracy. Key techniques:
+
+- Softmax: Additional range reduction via SafeSoftmax enables bipartite LUT
+  approximation. Bit-width optimized via Pareto frontier analysis. Error
+  compensation preserves accuracy. Division reformulated as logarithmic
+  subtraction via LOD-driven LUT, eliminating expensive dividers.
+
+- RMSNorm: LOD decomposes reciprocal square root into mantissa and exponent
+  parts, enabling parallel table lookup and a single multiplication.
+
+- Implementation: FPGA-based pipelined accelerator on Xilinx Alveo U55C,
+  achieving low latency and power with significantly reduced resource usage.
+
+================================================================================
+SECTION 1: INTRODUCTION
+================================================================================
+
+Context:
+- Transformer models since 2017 dominate LLM architectures
+- Hardware performance constrained by Moore's Law (~1.5x every 18 months)
+- FPGAs offer low-power, reconfigurable computing for edge inference
+- Linear layers benefit from quantization + MVM engines, but nonlinear
+  functions (Softmax, RMSNorm) still rely on high-precision floating-point
+- For long-context inference (e.g., 4096 tokens), nonlinear operators can
+  account for a significant fraction of total inference runtime
+
+Main Contributions:
+1. Softmax Approximation: Exponential approximated using LUTs + single adder,
+   fully fixed-point, zero DSP resources
+2. RMSNorm Approximation: x^{-0.5} via LOD-LUT-MUL structure with 32-entry
+   and 256-entry LUTs, minimal DSP, fully fixed-point
+3. Hardware Implementation: Deeply pipelined fixed-point architecture on
+   Xilinx Alveo U55C at 300 MHz
+
+================================================================================
+SECTION 2: RELATED WORK
+================================================================================
+
+Softmax Prior Work:
+- Softermax [15]: base-2 power form + Online-Softmax, needs fine-tuning
+- Mei [16]: 3-segment PLAC, each segment needs independent multiplier
+- Koca [17]: e^x ~ 2^{1.5x} (since log2(e) ~ 1.5), uses shifts instead of
+  multipliers, but dynamic shifters are expensive on FPGA
+- Wang/SOLE [18]: power-of-two scaling, e^x ~ 2^{kx}, nearest-power-of-two
+  normalization eliminates division, but not evaluated on FPGA
+
+RMSNorm Prior Work:
+- Lu [19]: direct arithmetic for reciprocal square root
+- Yu [20]: piecewise polynomials, high cost under wide dynamic range
+- Kim [12]: Newton-Raphson iteration, needs extra multipliers+adders
+- SOLE [18]: quantizes x^2 to lower bit-width, but poorly suited for large
+  parameter scales
+- Li [21]: general division approximation, excessive LUT overhead for LayerNorm
+- HAAN [22]: costly FX-FP-FX conversions
+
+This work vs. prior art:
+- vs. SOLE: LUT-based instead of dynamic shifter; log-domain division reuses
+  exp-LUT, no dedicated divider
+- vs. Li [21]: two small LUTs + multiplier instead of two large LUTs + four
+  branches (handles k parity implicitly)
+- vs. HAAN [22]: stays fully fixed-point, avoids FX-FP-FX conversions
+- vs. Kim [12]: extends valid input range beyond narrow (0, 2)
+
+================================================================================
+SECTION 3: PRELIMINARY
+================================================================================
+
+--- 3.1 Softmax and RMSNorm Definitions ---
+
+Eq (1) - Standard Softmax:
+  Softmax(x_i) = exp(x_i) / sum_{j=1}^{n} exp(x_j)
+
+Eq (2) - SafeSoftmax (numerically stable):
+  SafeSoftmax(x_i) = exp(x_i - max(x)) / sum_{j=1}^{n} exp(x_j - max(x))
+
+  Challenge: exponential and division operations
+
+Eq (3) - RMSNorm:
+  RMSNorm(x) = x / sqrt( (1/d) * sum_{i=1}^{d} x_i^2 + epsilon )
+
+  where d = input dimension, epsilon = small stability constant
+  Challenge: reciprocal square root operation
+
+--- 3.2 Bipartite Table Method ---
+
+Eq (4) - Bipartite approximation:
+  f(x) ~ a_0(x_0, x_1) + a_1(x_0, x_2)
+
+  Input x split into 3 parts with bit widths (n_0, n_1, n_2):
+  - a_0(x_0, x_1): indexed by (n_0+n_1) bits from Table_0 (main value)
+  - a_1(x_0, x_2): indexed by (n_0+n_2) bits from Table_1 (correction)
+  - Final result = a_0 + a_1 (single adder)
+
+  Replaces one large LUT with two smaller ones, preserving precision.
+
+--- 3.3 Compensation-Based Approximation ---
+
+Eq (5) - Bias-corrected approximation:
+  f_corr(x) = f_tilde(x) - Delta_k
+  Delta_k = (1/Delta_x) * integral_{x_k}^{x_{k+1}} [f_tilde(x_k) - f(x)] dx
+
+  Precomputed average deviation per segment stored as small compensation table.
+  Applied generically to reciprocal and square-root operations.
+
+================================================================================
+SECTION 4: METHODS
+================================================================================
+
+--- 4.1 Range-Reduced LUT-Based Approximation for Softmax ---
+
+SafeSoftmax constrains input to (-inf, 0].
+Further observation: when x < -16, exp(x) <= exp(-16) ~ 1.1e-7, negligible.
+Empirical clipping to [-16, 0] validated on LLaMA2-7B (negligible PPL increase).
+
+Input redefined as positive: (max(x) - x_i) in [0, 16)
+Integer part: 4 bits. Fractional part: 7 bits sufficient (per Table 1).
+Output: 16-bit (1 integer + 15 fractional) for Q1.15 in [0, 1].
+Total input: 11 bits (4 integer + 7 fractional).
+
+Table 1 - Bit-width Exploration:
+  Input Frac | Output Frac | PPL
+  6          | 14          | 5.5013
+  6          | 15          | 5.5002
+  7          | 14          | 5.4993
+  7          | 15          | 5.4940   <-- selected
+
+Eq (6) - Input decomposition:
+  x = x_0 + x_1 + x_2
+  Each segment has distinct bit widths for bipartite lookup.
+
+--- 4.2 Bipartite LUT Configuration and Error Compensation ---
+
+--- 4.2.1 Two-Stage Bit-Width Search (SNDR + Pareto) ---
+
+Three error sources (independent, uniformly distributed):
+  E_0: truncation error from Taylor expansion
+  E_1: coefficient quantization error
+  E_2: output quantization error
+
+Eq (7) - SNDR definition:
+  SNDR = 10 * log10( P_s / (P_n + P_D) )
+       = 10 * log10( <f(x)^2> / (E_0^2 + E_1^2 + E_2^2) )
+
+Eq (8): E_0 < |f''(xi_1)| * 2^{-2n_0 - 2n_1 - 2}
+Eq (9): E_1 < |f''(xi_2)| * 2^{-2n_0 - n_1 - 2}
+Eq (10): E_2 <= 2^{-n_out}
+
+Eq (11) - Average signal power over [0, 16):
+  P_s = E[e^{-2x}] = (1/16) * integral_0^16 e^{-2x} dx ~ 1/32
+
+Eq (12) - Full SNDR expression:
+  SNDR ~ 10*log10( (1/32) / (2^{-4n_0-4n_1-4} + 2^{-4n_0-2n_1-4} + 2^{-2n_out}) )
+
+Balance condition (equating E_1 and E_2):
+Eq (13): n_out <= 2*n_0 + n_1 + 2
+Eq (14): n_in = n_0 + n_1 + n_2
+
+Second stage - Pareto frontier:
+Eq (15) - Hardware cost: C = 2^{n_0+n_1} + 2^{n_0+n_2}
+Eq (16) - Accuracy metric: A = 2*n_0 + n_1
+Eq (17) - Dominance: C_j <= C_i AND A_j >= A_i (at least one strict)
+
+Result: Selected configuration (n_0, n_1, n_2) = (5, 3, 3)
+  - x_0=5 bits, x_1=3 bits index a_0 (Table_0)
+  - x_0=5 bits, x_2=3 bits index a_1 (Table_1)
+  - Total entries: 2^{5+3} + 2^{5+3} = 256 + 256 = 512
+
+Table 2 - Error Experiments Under Different Configurations:
+  Config  | MSE        | MAE        | MAX        | Storage (bits) | PPL
+  (5,3,3) | 0.00002339 | 0.00357613 | 0.01893544 | 512x16 (8192)  | --
+  (5,4,2) | 0.00000307 | 0.00141050 | 0.00530612 | 640x16 (10240) | --
+  (6,3,2) | 0.00000239 | 0.00126817 | 0.00463378 | 768x16 (12288) | --
+
+--- 4.2.2 Error Compensation and LUT Optimization ---
+
+Eq (18) - n-bit quantization operator:
+  Q_n(x) = 2^{-n} * round(2^n * x)
+
+Eq (19) - Compensated LUT_0 entry:
+  a_tilde_0(x_0, x_1) = 2^{-n_out} * round(2^{n_out} * exp(-Q_{n_0}(x_0) - Q_{n_1}(x_1) - delta_2))
+
+Eq (20) - Compensated LUT_1 entry (Taylor-form correction):
+  a_tilde_1(x_0, x_2) = 2^{-n_out} * round(2^{n_out} * (-exp'(-Q_{n_0}(x_0) - delta_1 - delta_2) * (Q_{n_2}(x_2) - delta_2)))
+
+Eq (21) - Compensation offsets (midpoints of sub-intervals):
+  delta_1 = 2^{-(n_0+1)} - 2^{-(n_0+n_1+1)}
+  delta_2 = 2^{-(n_0+n_1+1)} - 2^{-(n_0+n_1+n_2+1)}
+
+  For (5,3,3): delta_1 = 7/32 = 0.21875, delta_2 = 7/256 = 0.02734375
+
+Eq (22) - Final exponential approximation:
+  f_hat(x) = a_tilde_0(x_0, x_1) + a_tilde_1(x_0, x_2)
+
+Eq (23) - Hybrid loss for joint optimization:
+  L(f, f_hat) = alpha * (1/N) * sum_i (f(x_i) - f_hat(x_i))^2
+              + beta * max_i |f(x_i) - f_hat(x_i)|
+
+  with alpha, beta > 0 (weighting coefficients)
+
+Eq (24) - Final compensated exponential:
+  e^{x_i - max(x)} ~ LUT_a0[max(x) - x_i] + LUT_a1[max(x) - x_i]
+
+--- 4.2.3 Training and Experimental Setup ---
+
+Training data: 10,000 uniformly sampled points from [0, 16]
+Test set: 1,000,000 randomly generated samples
+Loss weights: alpha = 0.5, beta = 1.0
+Optimizer: Adam, lr = 1e-4, 1000 epochs, PyTorch 3.9.23
+LUT initialization: analytical expressions from Eq (19) and (20)
+Gradient: Straight-Through Estimator (STE) for rounding operation
+
+Table 3 - Accuracy Comparison (5,3,3 configuration):
+  Method          | MSE        | MAE        | MAX        | Storage (bit) | PPL
+  Naive-lut       | 0.00000220 | 0.00123727 | 0.00389008 | 2048x15 (30720) | 5.4943
+  Bi-lut-uncomp   | 0.00002339 | 0.00357613 | 0.01893544 | 512x15 (7680)   | 5.4949
+  Bi-lut-comp     | 0.00000510 | 0.00176482 | 0.00784302 | 512x15 (7680)   | 5.4946
+
+  Compensation reduces MAX error by ~50% vs uncompensated.
+  Bi-lut-comp uses 1/4 the entries of Naive-lut.
+
+--- 4.3 Low-Cost Division Approximation via Log-Domain Transformation ---
+
+Eq (25) - SafeSoftmax rewritten:
+  f(x_i) = exp(-x_i) / sum_{j=1}^{N} exp(-x_j),  i = 1, 2, ..., N
+
+Eq (26) - Log-domain transformation (division-free):
+  f(x_i) = exp(ln(f(x_i)))
+          = exp(-x_i - ln(sum_{j=1}^{N} exp(-x_j)))
+          = exp(-(x_i + ln(sum exp(-x_j))))
+
+  Division replaced by subtraction in log domain!
+
+--- 4.3.1 Efficient Approximation of Logarithmic Sum ---
+
+Let Sum = sum exp(x_j). LOD decomposes Sum as:
+
+Eq (27): Sum = 2^k * (1 + s),  s in [0, 1)
+
+Eq (28): ln(Sum) = k * ln(2) + ln(1 + s)
+
+After SafeSoftmax: x_j <= 0, so 1 <= Sum < N.
+Therefore k in [0, log2(N)), needing ceil(log2(log2(N))) bits for integer part.
+Fractional part s quantized to b_s bits, ln(1+s) from small LUT.
+
+Eq (29) - Truncation error bound:
+  delta = ln(S) - ln(S_tilde) = ln(1+s) - ln(1+T(s)) >= 0
+  where T(s) = floor(s * 2^{b_s}) / 2^{b_s}
+
+Eq (30) - Scaling variation on Softmax output:
+  Softmax_tilde(x_i) = Softmax(x_i) * e^delta
+  e^delta in [e^{-2^{-b_s-1}}, e^{-2^{-b_s}}] ~ 1 + O(2^{-b_s})
+
+Truncating s to 4 bits gives ~3-6% scaling variation.
+
+Eq (31) - RMSNorm scale invariance:
+  RMSNorm_epsilon(alpha*z) = gamma * (alpha*z) / sqrt(alpha^2 * ||z||^2/d + epsilon)
+                           ~ RMSNorm_epsilon(z)  when epsilon << ||z||^2/d
+
+Verified on Wikitext-2 with epsilon=1e-6, alpha=1.06 (6% worst case):
+  - Median epsilon/(||z||^2/d) = 3.1e-2, P95 < 1.6e-1
+  - Mean relative RMSNorm output deviation = 0.3%, P95 < 0.78%
+  RMSNorm effectively suppresses the input scaling error.
+
+--- 4.3.2 Reuse of Exponential Unit ---
+
+Both inner exp (e^{x_inner} = e^{x_i - max(x)}) and outer exp
+(e^{x_outer} = e^{(x_i - max(x)) - ln(sum)}) have outputs in (0, 1],
+so they share one hardware exponential unit.
+
+Eq (32): x_outer = x_inner - ln(sum(e^{x_inner}))
+
+Since 1 <= sum < N, x_outer range is (-16 - ln(N), 0].
+Inputs below -16 clipped to zero (same as inner LUT).
+
+Result: Complete division-free Softmax using only one subtractor + shared LUT.
+
+--- 4.4 Approximation of Reciprocal Root for RMSNorm ---
+
+Input d (mean square value) spans several orders of magnitude.
+
+Eq (33) - LOD decomposition:
+  1/sqrt(d) = 1/sqrt(2^k * (1+s)) = 2^{-k/2} * 1/sqrt(1+s)
+  where s in [0, 1)
+
+Example: d = 110.111_2, then k=2, s=0.10111_2
+
+Mantissa LUT: truncate s to alpha bits (e.g., alpha=8 for 256 entries):
+
+Eq (34) - Compensated mantissa LUT:
+  LUT_s[k_alpha] = 1/sqrt(1+s) ~ (2^{alpha+1}) * (sqrt(1+(k_alpha+1)*2^{-alpha}) - sqrt(1+k_alpha*2^{-alpha}))
+
+Problem with exponent term 2^{-k/2}:
+Eq (35) - When k is odd:
+  2^{-k/2} = 2^{-floor(k/2)} * 2^{-1/2} = 2^{-floor(k/2)} / sqrt(2)
+
+This requires distinguishing even/odd k, two separate LUTs, four branches.
+
+SOLUTION: Unified approach - precompute 2^{-k/2} directly in a single LUT
+indexed by k. Since d is bounded, k in [0, 31], requiring only a 32-entry
+table. Both even and odd cases handled implicitly without sqrt(2) multiplication.
+
+Eq (36) - Complete reciprocal root:
+  1/sqrt(d) ~ LUT_k[k] * LUT_s[k_alpha]
+
+Two compact LUTs + one integer multiplier:
+  - LUT_k: 32 entries (exponent term)
+  - LUT_s: 256 entries (mantissa term)
+
+Table 4 - Accuracy Comparison for 1/sqrt(d) on 500,000 points from [0, 2048]:
+  Method             | RMSE(x1e-3) | MAE(x1e-3) | MAX(x1e-3) | Storage (bit)    | PPL
+  Double-LUT [21]    | 74.600      | 23.475      | 362.39     | 256x16+256x16 (8192) | 5.5010
+  Double-LUT* [21]   | 72.082      | 22.305      | 362.74     | 256x16+256x16 (8192) | 5.5008
+  Hybrid-LUT (ours)  | 18.005      | 3.9321      | 187.88     | 256x16+34x21 (4810)  | 5.4956
+  Hybrid-LUT* (ours) | 17.921      | 3.9184      | 186.88     | 256x16+34x21 (4810)  | 5.4955
+
+  Hybrid-LUT reduces MAE by 82.4% vs Double-LUT with 41.3% less storage.
+  (* = with error compensation)
+
+================================================================================
+ALGORITHM 1: Hardware-Efficient Softmax with Log-Domain Approximation
+================================================================================
+
+Input:  {x_i}_{i=0}^{n-1} in Q5.6
+Output: {y_i}_{i=0}^{n-1} in UQ1.14
+
+Step 1: Maximum value extraction
+  1  m <- -INF
+  2  for i = 0 to n-1 do
+  3    m <- max(x_i, m)
+
+Step 2: Exponential approximation
+  4  S <- 0
+  5  for i = 0 to n-1 do
+  6    x_inner = x_i - m
+  7    if -x_inner > T then        // T = clipping threshold (16)
+  8      e_i <- 0
+  9    else
+  10     (n_0, n_1, n_2) <- bit_split(-x_inner)
+  11     e_i <- a_0_lut[n_0 << 3 + n_1] + a_1_lut[n_0 << 3 + n_2]  // LUT-based exp
+  12   S <- S + e_i
+
+Step 3: Log-domain division and normalization
+  13  (k, s) <- LOD(S)             // S = 2^k * (1 + s)
+  14  s_q <- trunc(s)
+  15  ln_S <- lnsum_table[k << 4 + s_q]
+  16  for i = 0 to n-1 do
+  17    x_outer <- (x_inner - ln_S)    // (x_i - m) - ln(S)
+  18    if -x_outer > T then
+  19      y_i <- 0
+  20    else
+  21      (n_0, n_1, n_2) <- bit_split(-x_outer)
+  22      y_i <- a_0_lut[n_0 << 3 + n_1] + a_1_lut[n_0 << 3 + n_2]  // reuse LUT
+
+  return {y_i}
+
+================================================================================
+ALGORITHM 2: RMSNorm with Separate Lookup Tables
+================================================================================
+
+Input:  vector x
+Output: normalized vector y
+
+Step 1: Compute mean square for input vector
+  1  sum <- 0
+  2  for i = 0 to n-1 do
+  3    sum <- sum + x_i * x_i
+  4  d <- sum / n                  // fixed bit-shift division
+
+Step 2: LOD decomposition of mean square value
+  5  k, s <- LOD(d)                // d = 2^k * (1 + s)
+  6  s_q <- trunc(s, alpha)        // keep alpha MSBs of s
+
+Step 3: Element-wise normalization
+  7  C <- LUT_s[s_q]              // mantissa LUT (256 entries)
+  8  K <- LUT_k[k]                // exponent LUT (32 entries)
+  9  scale <- C * K                // single integer multiply
+  10 for i = 0 to n-1 do
+  11   y_i <- x_i * scale          // single integer multiply
+
+  return y
+
+================================================================================
+SECTION 5: PIPELINED IMPLEMENTATION
+================================================================================
+
+Both operators use a unified THREE-STAGE PIPELINE:
+
+--- Softmax Pipeline (Figure 5) ---
+
+Stage 1 - Input Unpacking & Max Detection:
+  - 16-bit short format: 8-bit value + 8-bit quantization parameter (frac-bit pos)
+  - Multiple elements packed into 512-bit data blocks for bus bandwidth
+  - On-chip: unpack, align fractional points across normalization dimension
+  - Maximum value search (n cycles)
+  - Forward max value to Stage 2
+
+Stage 2 - Exponential Computation & Accumulation:
+  - Compute (x_i - max), clip inputs exceeding LUT range
+  - Masking: set invalid elements to large values -> exp clips to zero
+  - 11-bit input: lower 3 bits + upper 5 bits -> LUT_0 index
+  - Lower 3 bits + upper 5 bits -> LUT_1 index
+  - Sum LUT outputs -> exponential value
+  - Accumulate across all elements (n cycles)
+  - Forward sum to Stage 3
+
+Stage 3 - Log-Domain Normalization:
+  - LOD decomposes accumulated sum: extract k and mantissa s
+  - Concatenate via logic gates to form LUT index
+  - Fixed bit-shift aligns q_lnsum with original fractional point
+  - REUSE Stage 2 exponential unit for output computation
+
+--- RMSNorm Pipeline (Figure 6) ---
+
+Stage 1 - Same as Softmax (unpack + fractional-bit alignment)
+
+Stage 2 - Squaring & Accumulation:
+  - Square each preprocessed input
+  - Accumulate over n cycles
+  - Forward accumulated result to Stage 3
+
+Stage 3 - Reciprocal Square Root & Normalization:
+  - Fixed bit-shift division for mean value
+  - LOD extracts leading-one position k and truncated mantissa s
+  - Two LUT lookups: LUT_inv_sqrt[k] and LUT_comp[s]
+  - Two integer multipliers for final normalized output
+
+Resource: Two compact LUTs + two integer multipliers only.
+
+================================================================================
+SECTION 6: EXPERIMENT RESULTS
+================================================================================
+
+--- 6.1 Experimental Environment ---
+
+Platform: AMD Alveo U55C accelerator card
+  - ~1.304 million LUTs
+  - 9024 DSP slices
+  - 70.9 Mbit BRAM
+  - 16 GB HBM
+Model: LLaMA2-7B, W8A8 quantization
+Toolchain: Vitis HLS 2022.1, Vivado 2022.1
+Host: AMD Ryzen 9 7950X, Ubuntu 20.04.3 LTS
+Runtime: llama.cpp for heterogeneous inference
+
+--- 6.2 Datasets ---
+
+1. Wikitext-2: language modeling corpus (PPL evaluation)
+2. PROMISE-relabeled-NICE: 622 labeled instances for NFR classification
+   (12 subcategories of non-functional requirements)
+
+--- 6.3 NFR Classification Results ---
+
+Model quantized to W8A8, group-wise quantization for Softmax/RMSNorm inputs.
+~550 input tokens, ~106 output tokens per instance.
+Average latency: ~6 seconds per instance.
+Temperature = 0 (deterministic).
+
+Table 5 - NFR Classification F1-Scores:
+  Category            | After Approx | FP16 Original | Delta
+  IsFunctional        | 0.88         | 0.88          |  0.00
+  Availability (A)    | 0.86         | 0.83          | +0.03
+  Look & Feel (LF)    | 0.87         | 0.85          | +0.02
+  Scalability (SC)    | 0.86         | 0.79          | +0.07
+  Legal (L)           | 0.83         | 0.81          | +0.02
+  Usability (US)      | 0.77         | 0.73          | +0.04
+  Security (SE)       | 0.72         | 0.76          | -0.04
+  IsQuality           | 0.72         | 0.70          | +0.02
+  Performance (PE)    | 0.70         | 0.67          | +0.03
+  Fault Tolerance (FT)| 0.67         | 0.78          | -0.11
+  Portability (PO)    | 0.51         | 0.71          | -0.20
+  Maintainability (MN)| 0.45         | 0.48          | -0.03
+  Operability (O)     | 0.40         | 0.45          | -0.05
+  Macro Average       | 0.710        | 0.726         | -0.016
+
+  Overall F1: precision=0.7769, macro recall=0.6533, macro F1=0.7097
+
+--- 6.4 Analysis and Comparison ---
+
+Table 6 - PPL Comparison Across Platforms (Wikitext-2):
+  Quantization | Config              | PyTorch | CPU   | CPU+FPGA | PPL
+  FP16         | --                  | yes     |       |          | 5.4762
+  FP16         | --                  |         | yes   |          | 5.4736
+  W8A8         | --                  | yes     |       |          | 5.4825
+  W8A8         | --                  |         | yes   |          | 5.4940
+  W8A8         | +Softmax_Approx     | yes     |       |          | 5.4799
+  W8A8         | +Softmax_Approx     |         | yes   |          | 5.4971
+  W8A8         | +Softmax_Approx     |         |       | yes      | 5.4984
+  W8A8         | +RMSNorm_Approx     | yes     |       |          | 5.4792
+  W8A8         | +RMSNorm_Approx     |         | yes   |          | 5.4955
+  W8A8         | +RMSNorm_Approx     |         |       | yes      | 5.4967
+  W8A8         | +Both               | yes     |       |          | 5.4821
+  W8A8         | +Both               |         | yes   |          | 5.4973
+  W8A8         | +Both               |         |       | yes      | 5.4992
+
+  CPU-FPGA discrepancy < 0.002 (faithful reproduction).
+  Total PPL increase from FP16 baseline: 0.0237
+    - W8A8 quantization alone: +0.0204 (86% of total)
+    - Softmax + RMSNorm approximations: +0.0033 (14% of total)
+
+Table 7 - Operator-Level Ablation (W8A8, group size=32, CPU):
+  Component | Variant                          | PPL    | Delta PPL
+  Baseline  | Quantization only                | 5.4940 | --
+  Softmax   | LUT exp + standard division      | 5.4951 | +0.0011
+  Softmax   | LUT exp + log-domain div (ours)  | 5.4971 | +0.0021
+  RMSNorm   | standard division                | 5.4958 | +0.0018
+  RMSNorm   | Hybrid LUT division (ours)       | 5.4955 | +0.0015
+
+  Both approximations introduce only marginal PPL degradation.
+  Softmax slightly more sensitive (exp + normalization).
+  RMSNorm with Hybrid LUT: only +0.0015.
+
+--- Hardware Resource Utilization ---
+
+Table 8 - Softmax Resource Comparison:
+  Metric     | Ours (U55C)     | Ref[31] Zynq | Ref[35] KC705 | Ref[33] ZCU102 | Ref[19] XCVU13P | Ref[34] Virtex6 | Ref[32] ZC706
+  Freq (MHz) | 300             | 150          | 154           | 300            | 200             | 400             | 294
+  LUT        | 3112 (0.239%)   | 17,870       | 2229          | 22,865         | 21,190          | 300             | 1858
+  Registers  | 6215 (0.238%)   | 16,400       | 224           | 21,770         | 32,623          | 558             | 2086
+  DSP        | 0 (0%)          | --           | --            | 128            | 0               | 5               | 8
+  BRAM       | 10.5 (0.530%)   | --           | --            | 0              | 0               | 72K             | --
+
+  Key: 83% LUT reduction vs [31], ZERO DSPs (vs 128 for [33]).
+
+Table 9 - RMSNorm Resource Comparison:
+  Metric     | Ours (U55C)     | Ref[33] ZCU102 | Ref[19] XCVU13P | Ref[22] U280 | Ref[36] U50
+  Freq (MHz) | 300             | 300            | 200             | 100          | 100
+  LUT        | 3954 (0.303%)   | 10,558         | 10,551          | 86K          | 2817
+  Registers  | 5810 (0.223%)   | 4038           | 5325            | 25K          | 2145
+  DSP        | 18 (0.199%)     | 74             | 129             | 1025         | 7
+  BRAM       | 16 (0.810%)     | 9              | 27.5            | --           | 2
+
+  Key: 95%+ fewer logic resources vs [22], 18 DSPs vs 74-1025.
+
+--- Combined Resource Usage & Scalability (Alveo U55C) ---
+
+  Single Softmax:  0.239% LUT, 0.238% Reg, 0% DSP, 0.53% BRAM
+  Single RMSNorm:  0.303% LUT, 0.223% Reg, 0.199% DSP, 0.81% BRAM
+  Paired pipeline:  0.54% LUT, 0.46% Reg, 0.20% DSP, 1.35% BRAM
+
+  Maximum parallel instances on U55C:
+    - ~192 Softmax instances
+    - ~126 RMSNorm instances
+    - ~76 paired Softmax-RMSNorm pipelines
+  BRAM is first limiting resource in all cases.
+
+--- Latency and Power ---
+
+  Softmax (data size 32x2048):
+    Latency: 0.292 ms at 300 MHz
+    Power: 17.7 W
+    Throughput: 224.4 M elements/s
+
+  RMSNorm (data size 128x4096):
+    Latency: 1.837 ms at 300 MHz
+    Power: 17.6 W
+    Throughput: 285.4 M elements/s
+
+================================================================================
+SECTION 7: CONCLUSIONS
+================================================================================
+
+- Softmax: range-reduced bipartite LUTs + bit-width optimization + log-domain
+  division elimination. High accuracy, zero DSPs.
+- RMSNorm: LOD-based decomposition + Hybrid LUT reciprocal-root replaces
+  floating-point with integer operations, minimal DSPs.
+- On LLaMA2-7B: only 0.026 PPL deviation from FP16 baseline on Wikitext-2.
+- On Alveo U55C at 300 MHz: Softmax uses 3112 LUTs / 0 DSPs,
+  RMSNorm uses 3954 LUTs / 18 DSPs.
+- Low operator-level latency and modest power consumption.
+
+================================================================================
+KEY TAKEAWAYS FOR FPGA IMPLEMENTATION
+================================================================================
+
+SOFTMAX:
+  - Input: Q5.6 (11-bit: 4 int + 7 frac after clipping to [0,16))
+  - Output: UQ1.15 (or UQ1.14 per algorithm)
+  - Bipartite LUT: (5,3,3) split -> 256+256 = 512 entries x 16 bits = 8192 bits
+  - delta_1 = 7/32 = 0.21875
+  - delta_2 = 7/256 = 0.02734375
+  - LUT_0: indexed by {x_0, x_1} = 8 bits -> 256 entries
+  - LUT_1: indexed by {x_0, x_2} = 8 bits -> 256 entries
+  - LUT_0 uses exact-exp with delta_2 offset
+  - LUT_1 uses Taylor/derivative form with delta_1 + delta_2
+  - Error compensation via Adam + STE training (alpha=0.5, beta=1.0)
+  - Division: log-domain via LOD(sum) -> ln_table lookup -> reuse exp LUT
+  - ln(Sum) = k*ln(2) + ln(1+s), with s truncated to 4 bits
+  - 3-6% scaling variation absorbed by RMSNorm scale invariance
+  - Three-stage pipeline: max detection | exp+accumulate | log-normalize
+  - Total: 0 DSPs, 3112 LUTs, 10.5 BRAMs
+
+RMSNORM:
+  - LOD decomposes d = 2^k * (1+s)
+  - LUT_k: 32 entries (exponent term 2^{-k/2}, handles even/odd k implicitly)
+  - LUT_s: 256 entries (mantissa term 1/sqrt(1+s), with compensation)
+  - scale = LUT_k[k] * LUT_s[trunc(s)]
+  - y_i = x_i * scale
+  - Three-stage pipeline: unpack+align | square+accumulate | LOD+LUT+multiply
+  - Total: 18 DSPs, 3954 LUTs, 16 BRAMs
+
+================================================================================
+REFERENCES (selected key ones)
+================================================================================
+
+[1]  Vaswani et al. "Attention is all you need" NeurIPS 2017
+[12] Kim et al. "Hardware Accelerator for Approximation-Based Softmax and
+     Layer Normalization in Transformers" Electronics 2025
+[15] Milakov & Gimelshein. "Online normalizer calculation for softmax" 2018
+[17] Koca et al. "Hardware-efficient softmax approximation" ISCAS 2023
+[18] Wang et al. "SOLE: Hardware-software co-design of softmax and layernorm"
+     ICCAD 2023
+[21] Li et al. "Hardware-oriented algorithms for softmax and layer normalization
+     of large language models" Sci China Inf Sci 2024
+[22] Peng et al. "HAAN: Holistic Approach for Accelerating Normalization" DATE 2025
+[25] Schulte & Stine. "Symmetric bipartite tables for accurate function
+     approximation" IEEE Symp Computer Arithmetic 1997
+[27] Wang et al. "High-speed low-complexity architecture for softmax" APCCAS 2018
+[28] Zhang & Sennrich. "Root mean square layer normalization" NeurIPS 2019

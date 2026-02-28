@@ -1,4 +1,6 @@
-INFO: [VRFC 10-2263] Analyzing Verilog file "/home/user/red_eyes_is_all_you_need/rtl/inv_sqrt.v" into library xil_defaultlib
-INFO: [VRFC 10-311] analyzing module inv_sqrt
-INFO: [VRFC 10-2263] Analyzing Verilog file "/home/user/red_eyes_is_all_you_need/tb/tb_inv_sqrt.v" into library xil_defaultlib
-INFO: [VRFC 10-311] analyzing module tb_inv_sqrt
+INFO: [VRFC 10-2263] Analyzing Verilog file "/home/user/red_eyes_is_all_you_need/rtl/softmax.v" into library xil_defaultlib
+INFO: [VRFC 10-311] analyzing module softmax
+WARNING: [VRFC 10-3380] identifier 'x0_sel' is used before its declaration [/home/user/red_eyes_is_all_you_need/rtl/softmax.v:91]
+WARNING: [VRFC 10-3380] identifier 'x0_sel' is used before its declaration [/home/user/red_eyes_is_all_you_need/rtl/softmax.v:92]
+INFO: [VRFC 10-2263] Analyzing Verilog file "/home/user/red_eyes_is_all_you_need/tb/tb_softmax.v" into library xil_defaultlib
+INFO: [VRFC 10-311] analyzing module tb_softmax

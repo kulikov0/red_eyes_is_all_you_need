@@ -4,4 +4,6 @@ Nov 14 2025
 12:36:23
 /home/user/red_eyes_is_all_you_need/project/project.sim/sim_1/behav/xsim/glbl.v,1756381829,verilog,,,,glbl,,,,,,,,
 /home/user/red_eyes_is_all_you_need/rtl/inv_sqrt.v,1772144118,verilog,,/home/user/red_eyes_is_all_you_need/tb/tb_inv_sqrt.v,,inv_sqrt,,,../../../../../../Xilinx/2025.2/data/rsb/busdef;../../../../../rtl,,,,,
+/home/user/red_eyes_is_all_you_need/rtl/softmax.v,1772273038,verilog,,/home/user/red_eyes_is_all_you_need/tb/tb_softmax.v,,softmax,,,../../../../../../Xilinx/2025.2/data/rsb/busdef;../../../../../rtl,,,,,
 /home/user/red_eyes_is_all_you_need/tb/tb_inv_sqrt.v,1772188795,verilog,,,,tb_inv_sqrt,,,../../../../../../Xilinx/2025.2/data/rsb/busdef;../../../../../rtl,,,,,
+/home/user/red_eyes_is_all_you_need/tb/tb_softmax.v,1772227458,verilog,,,,tb_softmax,,,../../../../../../Xilinx/2025.2/data/rsb/busdef;../../../../../rtl,,,,,
