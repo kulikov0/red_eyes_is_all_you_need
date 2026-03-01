@@ -32,11 +32,11 @@ for tb_path in $tb_files; do
     xvlog -i $PROJ/rtl $PROJ/rtl/*.v $PROJ/tb/${tb_file}.v 2>&1 && \
     xelab -debug off -timescale 1ns/1ps work.$tb_file -s snap 2>&1 && \
     xsim snap -runall 2>&1
-  " 2>&1)
+  " 2>&1) || true
 
-  if echo "$output" | grep -qiE "^ERROR"; then
+  if echo "$output" | grep -qiE "^(ERROR|FAIL|TIMEOUT)"; then
     echo "  FAIL"
-    echo "$output" | grep -iE "^ERROR"
+    echo "$output" | grep -iE "^(ERROR|FAIL|TIMEOUT)"
     sim_fails=$((sim_fails + 1))
   else
     echo "  PASS"
