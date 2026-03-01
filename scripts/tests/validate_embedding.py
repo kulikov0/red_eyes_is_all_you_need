@@ -127,7 +127,7 @@ if __name__ == "__main__":
         tok_base = tok * DIM
         pos_base = pos * DIM
 
-        print(f"=== Test {test_num}: tok={tok} pos={pos} ===")
+        print(f"Test {test_num}: tok={tok} pos={pos}")
         print(f"{'idx':>5s}  {'xsim':>5s}  {'golden':>6s}  {'ideal':>6s}  {'delta':>6s}  {'status'}")
 
         for i in range(DIM):

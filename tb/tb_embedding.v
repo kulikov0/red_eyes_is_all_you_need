@@ -102,7 +102,7 @@ module tb_embedding;
     run_test(2, 8'd42,  8'd10);
     run_test(3, 8'd255, 8'd255);
 
-    $display("=== All tests done ===");
+    $display("=== All 4 tests done ===");
 
     $fclose(fd);
     $finish;

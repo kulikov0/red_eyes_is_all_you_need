@@ -93,8 +93,8 @@ module tb_softmax;
     input [255:0] name;  // test name (padded string)
     integer j;
     begin
-      $fwrite(fd, "\n=== Test %0d: %0s ===\n", tnum, name);
-      $display("\n=== Test %0d: %0s ===", tnum, name);
+      $fwrite(fd, "\nTest %0d: %0s\n", tnum, name);
+      $display("\nTest %0d: %0s", tnum, name);
       for (j = 0; j < N; j = j + 1) begin
         $fwrite(fd, "OUT[%0d] input=%0d output=%0d\n", j,
                 $signed(test_input[j]), test_output[j]);
@@ -295,11 +295,11 @@ module tb_softmax;
     $display("");
     $fwrite(fd, "\n");
     if (total_errors == 0) begin
-      $display("*** ALL 5 TESTS PASSED ***");
-      $fwrite(fd, "*** ALL 5 TESTS PASSED ***\n");
+      $display("=== All 5 tests passed ===");
+      $fwrite(fd, "=== All 5 tests passed ===\n");
     end else begin
-      $display("*** %0d TOTAL ERRORS ***", total_errors);
-      $fwrite(fd, "*** %0d TOTAL ERRORS ***\n", total_errors);
+      $display("=== %0d errors out of 5 ===", total_errors);
+      $fwrite(fd, "=== %0d errors out of 5 ===\n", total_errors);
     end
 
     $fclose(fd);

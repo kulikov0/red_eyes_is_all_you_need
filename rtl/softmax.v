@@ -83,14 +83,6 @@ module softmax #(
     $readmemh(LUT1_HEX, exp_lut1);
   end
 
-  reg [15:0]        lut0_out;
-  reg signed [15:0] lut1_out;
-  always @(posedge clk_i) begin
-    lut0_out <= exp_lut0[{x0_sel, x1_sel}];
-    lut1_out <= exp_lut1[{x0_sel, x2_sel}];
-  end
-
-
   // ln(1 + s/16) * 128 lookup (distributed RAM)
   reg [7:0] ln1ps_lut [0:15];
   initial begin
@@ -150,6 +142,13 @@ module softmax #(
   wire [2:0] x1_sel = d_sel[5:3];
   wire [2:0] x2_sel = d_sel[2:0];
 
+  // Registered LUT read (BRAM output stage)
+  reg [15:0]        lut0_out;
+  reg signed [15:0] lut1_out;
+  always @(posedge clk_i) begin
+    lut0_out <= exp_lut0[{x0_sel, x1_sel}];
+    lut1_out <= exp_lut1[{x0_sel, x2_sel}];
+  end
 
   // exp_val (valid when p1_valid, uses clip_r and LUT outputs)
   wire signed [16:0] exp_sum_raw = {1'b0, lut0_out} + {{1{lut1_out[15]}}, lut1_out};

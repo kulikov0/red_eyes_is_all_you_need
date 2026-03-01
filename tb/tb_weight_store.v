@@ -136,11 +136,11 @@ module tb_weight_store;
     end
 
     if (errors == 0) begin
-      $display("*** ALL %0d TESTS PASSED ***", 72);
-      $fwrite(fd, "*** ALL %0d TESTS PASSED ***\n", 72);
+      $display("=== All 72 tests passed ===");
+      $fwrite(fd, "=== All 72 tests passed ===\n");
     end else begin
-      $display("*** %0d ERRORS ***", errors);
-      $fwrite(fd, "*** %0d ERRORS ***\n", errors);
+      $display("=== %0d errors out of 72 ===", errors);
+      $fwrite(fd, "=== %0d errors out of 72 ===\n", errors);
     end
 
     $fclose(fd);

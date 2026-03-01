@@ -211,7 +211,7 @@ if __name__ == "__main__":
     for t_idx, test in enumerate(TESTS):
         entries = xsim.get(t_idx, [])
         if not entries:
-            print(f"=== Test {t_idx} ({test['name']}): no data ===")
+            print(f"Test {t_idx} ({test['name']}): no data")
             total_errors += 1
             continue
 
@@ -233,7 +233,7 @@ if __name__ == "__main__":
         max_abs_ideal = 0
         sum_abs_ideal = 0
 
-        print(f"=== Test {t_idx}: {test['name']} (gamma_sel={gamma_sel})=== ")
+        print(f"Test {t_idx}: {test['name']} (gamma_sel={gamma_sel})")
         print(f"{'idx':>5s}  {'xsim':>5s}  {'golden':>6s}  {'ideal':>6s}  {'d_gold':>6s}  {'d_ideal':>7s}  {'status'}")
         print("-" * 56)
 

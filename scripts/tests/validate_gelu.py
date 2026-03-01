@@ -85,7 +85,7 @@ if __name__ == "__main__":
         max_abs_delta = 0
         sum_abs_delta = 0
 
-        print(f"=== Layer {layer} ===")
+        print(f"Layer {layer}")
         print(f"{'in':>5s}  {'xsim':>5s}  {'golden':>6s}  {'delta':>6s}  {'status'}")
         print("-" * 38)
 

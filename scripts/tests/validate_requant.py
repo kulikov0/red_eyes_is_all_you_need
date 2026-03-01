@@ -88,7 +88,7 @@ if __name__ == "__main__":
         cfg = DUTS[dut_name]
         tests = by_dut[dut_name]
 
-        print(f"=== DUT {dut_name}: ACC_W={cfg['acc_w']} SHIFT={cfg['shift']} ===")
+        print(f"DUT {dut_name}: ACC_W={cfg['acc_w']} SHIFT={cfg['shift']}")
         print(f"{'idx':>5s}  {'xsim':>5s}  {'golden':>6s}  {'delta':>6s}  {'status'}")
 
         errors = 0

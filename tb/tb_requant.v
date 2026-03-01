@@ -102,7 +102,7 @@ module tb_requant;
     // 1024 * 8192 >>> 19 = 1024 >>> 6 = 16
     test_b(14, 19'sd1024, 16'd8192);
 
-    $display("=== All tests done ===");
+    $display("=== All 15 tests done ===");
     $fclose(fd);
     $finish;
   end

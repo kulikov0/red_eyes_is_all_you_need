@@ -164,19 +164,18 @@ module tb_weight_store;
     end
 
     if (errors == 0) begin
-      $display("*** ALL %0d TESTS PASSED ***", {n * 2});
-      $fwrite(fd, "*** ALL %0d TESTS PASSED ***\\n", {n * 2});
+      $display("=== All {n * 2} tests passed ===");
+      $fwrite(fd, "=== All {n * 2} tests passed ===\\n");
     end else begin
-      $display("*** %0d ERRORS ***", errors);
-      $fwrite(fd, "*** %0d ERRORS ***\\n", errors);
+      $display("=== %0d errors out of {n * 2} ===", errors);
+      $fwrite(fd, "=== %0d errors out of {n * 2} ===\\n", errors);
     end
 
     $fclose(fd);
     $finish;
   end
 
-endmodule
-"""
+endmodule"""
 
     os.makedirs(TB, exist_ok=True)
     tb_path = os.path.join(TB, "tb_weight_store.v")
@@ -254,7 +253,7 @@ def main():
                 errors += 1
                 break
     if errors:
-        print(f"\n*** {errors} verification errors! ***", file=sys.stderr)
+        print(f"\n=== {errors} verification errors ===", file=sys.stderr)
         sys.exit(1)
     else:
         print(f"\nAll {len(tensors)} hex files verified")

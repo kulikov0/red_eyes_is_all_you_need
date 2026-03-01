@@ -133,7 +133,7 @@ def golden_softmax(inputs, lut0, lut1):
 
 
 def parse_log(path):
-    test_pat = re.compile(r"=== Test (\d+): (.+?) ===")
+    test_pat = re.compile(r"Test (\d+): (.+)")
     out_pat = re.compile(r"OUT\[(\d+)\] input=(-?\d+) output=(\d+)")
     sum_pat = re.compile(r"SUM=(\d+)")
 

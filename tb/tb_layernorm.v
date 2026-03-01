@@ -159,29 +159,29 @@ module tb_layernorm;
     repeat(2) @(posedge clk);
 
     // Test 0: ramp input (0..127) with block0_ln1 (gamma=sel 2, beta=sel 3)
-    $display("=== Test 0: ramp ===");
-    $fwrite(fd, "=== Test 0: ramp ===\n");
+    $display("Test 0: ramp");
+    $fwrite(fd, "Test 0: ramp\n");
     gamma_sel = 6'd2;
     for (i = 0; i < 128; i = i + 1) test_input[i] = i[7:0];
     run_test(0);
 
     // Test 1: constant input (all 42) - zero variance case
-    $display("=== Test 1: constant ===");
-    $fwrite(fd, "=== Test 1: constant ===\n");
+    $display("Test 1: constant");
+    $fwrite(fd, "Test 1: constant\n");
     gamma_sel = 6'd2;
     for (i = 0; i < 128; i = i + 1) test_input[i] = 8'sd42;
     run_test(1);
 
     // Test 2: signed ramp (-64..63) with block0_ln2 (gamma=sel 6, beta=sel 7)
-    $display("=== Test 2: signed ramp ===");
-    $fwrite(fd, "=== Test 2: signed ramp ===\n");
+    $display("Test 2: signed ramp");
+    $fwrite(fd, "Test 2: signed ramp\n");
     gamma_sel = 6'd6;
     for (i = 0; i < 128; i = i + 1) test_input[i] = (i - 64);
     run_test(2);
 
     // Test 3: alternating +/- with block1_ln1 (gamma=sel 10, beta=sel 11)
-    $display("=== Test 3: alternating ===");
-    $fwrite(fd, "=== Test 3: alternating ===\n");
+    $display("Test 3: alternating");
+    $fwrite(fd, "Test 3: alternating\n");
     gamma_sel = 6'd10;
     for (i = 0; i < 128; i = i + 1) begin
       if (i % 2 == 0) test_input[i] = 8'sd50;
@@ -190,14 +190,14 @@ module tb_layernorm;
     run_test(3);
 
     // Test 4: ramp with ln_f (gamma=sel 34, beta=sel 35)
-    $display("=== Test 4: ramp with ln_f ===");
-    $fwrite(fd, "=== Test 4: ramp with ln_f ===\n");
+    $display("Test 4: ramp with ln_f");
+    $fwrite(fd, "Test 4: ramp with ln_f\n");
     gamma_sel = 6'd34;
     for (i = 0; i < 128; i = i + 1) test_input[i] = i[7:0];
     run_test(4);
 
-    $display("=== All tests done ===");
-    $fwrite(fd, "=== All tests done ===\n");
+    $display("=== All 5 tests done ===");
+    $fwrite(fd, "=== All 5 tests done ===\n");
 
     $fclose(fd);
     $finish;

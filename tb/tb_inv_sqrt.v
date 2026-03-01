@@ -112,11 +112,11 @@ module tb_inv_sqrt;
     end
 
     if (errors == 0) begin
-      $display("*** ALL %0d TESTS PASSED ***", N_TESTS);
-      $fwrite(fd, "*** ALL %0d TESTS PASSED ***\n", N_TESTS);
+      $display("=== All %0d tests passed ===", N_TESTS);
+      $fwrite(fd, "=== All %0d tests passed ===\n", N_TESTS);
     end else begin
-      $display("*** %0d ERRORS out of %0d ***", errors, N_TESTS);
-      $fwrite(fd, "*** %0d ERRORS out of %0d ***\n", errors, N_TESTS);
+      $display("=== %0d errors out of %0d ===", errors, N_TESTS);
+      $fwrite(fd, "=== %0d errors out of %0d ===\n", errors, N_TESTS);
     end
 
     $fclose(fd);

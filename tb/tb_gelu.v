@@ -33,7 +33,7 @@ module tb_gelu;
     $fwrite(fd, "=== GELU Testbench ===\n");
 
     for (layer = 0; layer < 4; layer = layer + 1) begin
-      $fwrite(fd, "=== Layer %0d ===\n", layer);
+      $fwrite(fd, "Layer %0d\n", layer);
 
       for (i = 0; i < 256; i = i + 1) begin
         @(posedge clk);
@@ -50,8 +50,8 @@ module tb_gelu;
       $display("Layer %0d done (256 entries)", layer);
     end
 
-    $display("=== Done: 1024 entries logged ===");
-    $fwrite(fd, "=== Done: 1024 entries logged ===\n");
+    $display("=== All 4 tests done ===");
+    $fwrite(fd, "=== All 4 tests done ===\n");
 
     $fclose(fd);
     $finish;
