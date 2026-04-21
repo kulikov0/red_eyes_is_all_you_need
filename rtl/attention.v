@@ -33,10 +33,11 @@ module attention (
   input  wire [7:0]    pos_i,
   input  wire [2047:0] x_i,
 
-  // Weight store (active during S_QKV and S_PROJ)
+  // Weight store
   output wire [5:0]    w_sel_o,
   output wire [15:0]   w_addr_o,
   input  wire [7:0]    w_data_i,
+  input  wire [15:0]   w_scale_i,
 
   // K cache (fp16)
   output reg           k_we_o,
@@ -58,8 +59,6 @@ module attention (
   output reg  [2047:0] out_vec_o,
   output reg           done_o
 );
-
-  `include "weight_scales.vh"
 
   // 1/sqrt(HEAD_DIM) = 1/sqrt(16) = 0.25
   localparam [15:0] INV_SQRT_DK = 16'h3400;
@@ -83,30 +82,6 @@ module attention (
   reg [1:0] layer_r;
   reg [7:0] pos_r;
 
-  // Per-layer scale selection
-  reg [15:0] qkv_scale;
-  reg [15:0] proj_scale;
-  always @(*) begin
-    case (layer_r)
-      2'd0: begin
-        qkv_scale  = SCALE_BLOCK0_ATTN_QKV_WEIGHT;
-        proj_scale = SCALE_BLOCK0_ATTN_PROJ_WEIGHT;
-      end
-      2'd1: begin
-        qkv_scale  = SCALE_BLOCK1_ATTN_QKV_WEIGHT;
-        proj_scale = SCALE_BLOCK1_ATTN_PROJ_WEIGHT;
-      end
-      2'd2: begin
-        qkv_scale  = SCALE_BLOCK2_ATTN_QKV_WEIGHT;
-        proj_scale = SCALE_BLOCK2_ATTN_PROJ_WEIGHT;
-      end
-      2'd3: begin
-        qkv_scale  = SCALE_BLOCK3_ATTN_QKV_WEIGHT;
-        proj_scale = SCALE_BLOCK3_ATTN_PROJ_WEIGHT;
-      end
-    endcase
-  end
-
   // Head iteration
   reg [2:0] head_idx;
 
@@ -121,7 +96,7 @@ module attention (
     .rst_i        (rst_i),
     .start_i      (qkv_start),
     .in_vec_i     (x_i),
-    .scale_i      (qkv_scale),
+    .scale_i      (w_scale_i),
     .weight_addr_o(qkv_addr),
     .weight_data_i(w_data_i),
     .out_vec_o    (qkv_out),
@@ -140,7 +115,7 @@ module attention (
     .rst_i        (rst_i),
     .start_i      (proj_start),
     .in_vec_i     (head_out_buf),
-    .scale_i      (proj_scale),
+    .scale_i      (w_scale_i),
     .weight_addr_o(proj_addr),
     .weight_data_i(w_data_i),
     .out_vec_o    (proj_out),

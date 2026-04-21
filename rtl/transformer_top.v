@@ -31,6 +31,7 @@ module transformer_top (
   output reg  [5:0]  w_sel_o,
   output reg  [15:0] w_addr_o,
   input  wire [7:0]  w_data_i,
+  input  wire [15:0] w_scale_i,
 
   // K cache (fp16)
   output wire        k_we_o,
@@ -55,9 +56,8 @@ module transformer_top (
   output reg         done_o
 );
 
-  `include "weight_scales.vh"
 
-  // FSM states (no S_LN_F_FEED -- fp16 LN uses flat bus)
+  // FSM states
   localparam [3:0] S_IDLE         = 4'd0,
                    S_EMBED        = 4'd1,
                    S_LAYER_START  = 4'd2,
@@ -90,8 +90,7 @@ module transformer_top (
     .start_i   (emb_start),
     .token_id_i(cur_token),
     .position_i(pos_r),
-    .tok_scale_i(SCALE_TOK_EMB_WEIGHT),
-    .pos_scale_i(SCALE_POS_EMB_WEIGHT),
+    .w_scale_i (w_scale_i),
     .w_sel_o   (emb_w_sel),
     .w_addr_o  (emb_w_addr),
     .w_data_i  (w_data_i),
@@ -126,6 +125,7 @@ module transformer_top (
     .w_sel_o   (tl_w_sel),
     .w_addr_o  (tl_w_addr),
     .w_data_i  (w_data_i),
+    .w_scale_i (w_scale_i),
     .k_we_o    (tl_k_we),
     .k_wdata_o (tl_k_wdata),
     .k_rdata_i (k_rdata_i),
@@ -167,8 +167,7 @@ module transformer_top (
     .w_addr_o    (lnf_w_addr),
     .w_data_i    (w_data_i),
     .gamma_sel_i (6'd34),
-    .gamma_scale_i(SCALE_LN_F_WEIGHT),
-    .beta_scale_i (SCALE_LN_F_BIAS),
+    .w_scale_i   (w_scale_i),
     .y_o         (lnf_y),
     .done_o      (lnf_done),
     .busy_o      ()
@@ -185,7 +184,7 @@ module transformer_top (
     .rst_i        (rst_i),
     .start_i      (head_start),
     .in_vec_i     (x_reg),
-    .scale_i      (SCALE_TOK_EMB_WEIGHT),
+    .scale_i      (w_scale_i),
     .weight_addr_o(head_addr),
     .weight_data_i(w_data_i),
     .out_vec_o    (head_out),

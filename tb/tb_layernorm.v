@@ -9,8 +9,6 @@ module tb_layernorm;
   reg start = 1'b0;
   reg [2047:0] x_data;
   reg [5:0] gamma_sel;
-  reg [15:0] gamma_scale;
-  reg [15:0] beta_scale;
 
   wire [5:0]  w_sel;
   wire [6:0]  w_addr;
@@ -58,26 +56,47 @@ module tb_layernorm;
   always @(posedge clk) w_data_r <= ln_mem[ln_addr];
   assign w_data = w_data_r;
 
-  // FP16 dequant scales from weight_scales.vh
-  `include "weight_scales.vh"
+  // Scale stub keyed on w_sel
+  reg [15:0] w_scale;
+  always @(posedge clk) begin
+    case (w_sel)
+      6'd2:  w_scale <= 16'h2124;
+      6'd3:  w_scale <= 16'h1c90;
+      6'd6:  w_scale <= 16'h209c;
+      6'd7:  w_scale <= 16'h1124;
+      6'd10: w_scale <= 16'h2144;
+      6'd11: w_scale <= 16'h1536;
+      6'd14: w_scale <= 16'h20ff;
+      6'd15: w_scale <= 16'h1480;
+      6'd18: w_scale <= 16'h222c;
+      6'd19: w_scale <= 16'h12e2;
+      6'd22: w_scale <= 16'h221d;
+      6'd23: w_scale <= 16'h1668;
+      6'd26: w_scale <= 16'h21ca;
+      6'd27: w_scale <= 16'h10da;
+      6'd30: w_scale <= 16'h2292;
+      6'd31: w_scale <= 16'h15b5;
+      6'd34: w_scale <= 16'h24ee;
+      6'd35: w_scale <= 16'h19fd;
+      default: w_scale <= 16'd0;
+    endcase
+  end
 
-  // DUT
   layernorm #(
     .DIM(128)
   ) dut (
-    .clk_i         (clk),
-    .rst_i         (rst),
-    .start_i       (start),
-    .x_i           (x_data),
-    .w_sel_o       (w_sel),
-    .w_addr_o      (w_addr),
-    .w_data_i      (w_data),
-    .gamma_sel_i   (gamma_sel),
-    .gamma_scale_i (gamma_scale),
-    .beta_scale_i  (beta_scale),
-    .y_o           (y_data),
-    .done_o        (done),
-    .busy_o        ()
+    .clk_i      (clk),
+    .rst_i      (rst),
+    .start_i    (start),
+    .x_i        (x_data),
+    .w_sel_o    (w_sel),
+    .w_addr_o   (w_addr),
+    .w_data_i   (w_data),
+    .gamma_sel_i(gamma_sel),
+    .w_scale_i  (w_scale),
+    .y_o        (y_data),
+    .done_o     (done),
+    .busy_o     ()
   );
 
   integer fd, i;
@@ -136,64 +155,56 @@ module tb_layernorm;
     $display("Test 0: embed(0,0) block0_ln1");
     $fwrite(fd, "Test 0: embed(0,0) block0_ln1\n");
     gamma_sel = 6'd2;
-    gamma_scale = SCALE_BLOCK0_LN1_WEIGHT;
-    beta_scale = SCALE_BLOCK0_LN1_BIAS;
+
     run_test(0);
 
     // Test 1: embed(42,10) block0_ln2 - different embedding
     $display("Test 1: embed(42,10) block0_ln2");
     $fwrite(fd, "Test 1: embed(42,10) block0_ln2\n");
     gamma_sel = 6'd6;
-    gamma_scale = SCALE_BLOCK0_LN2_WEIGHT;
-    beta_scale = SCALE_BLOCK0_LN2_BIAS;
+
     run_test(1);
 
     // Test 2: embed(200,100) block1_ln1 - high token/pos
     $display("Test 2: embed(200,100) block1_ln1");
     $fwrite(fd, "Test 2: embed(200,100) block1_ln1\n");
     gamma_sel = 6'd10;
-    gamma_scale = SCALE_BLOCK1_LN1_WEIGHT;
-    beta_scale = SCALE_BLOCK1_LN1_BIAS;
+
     run_test(2);
 
     // Test 3: large magnitude [-50,+50] block2_ln1
     $display("Test 3: large values block2_ln1");
     $fwrite(fd, "Test 3: large values block2_ln1\n");
     gamma_sel = 6'd18;
-    gamma_scale = SCALE_BLOCK2_LN1_WEIGHT;
-    beta_scale = SCALE_BLOCK2_LN1_BIAS;
+
     run_test(3);
 
     // Test 4: near-constant (tiny variance) block2_ln2
     $display("Test 4: near-constant block2_ln2");
     $fwrite(fd, "Test 4: near-constant block2_ln2\n");
     gamma_sel = 6'd22;
-    gamma_scale = SCALE_BLOCK2_LN2_WEIGHT;
-    beta_scale = SCALE_BLOCK2_LN2_BIAS;
+
     run_test(4);
 
     // Test 5: mixed outliers block3_ln1
     $display("Test 5: mixed outliers block3_ln1");
     $fwrite(fd, "Test 5: mixed outliers block3_ln1\n");
     gamma_sel = 6'd26;
-    gamma_scale = SCALE_BLOCK3_LN1_WEIGHT;
-    beta_scale = SCALE_BLOCK3_LN1_BIAS;
+
     run_test(5);
 
     // Test 6: all negative block3_ln2
     $display("Test 6: all negative block3_ln2");
     $fwrite(fd, "Test 6: all negative block3_ln2\n");
     gamma_sel = 6'd30;
-    gamma_scale = SCALE_BLOCK3_LN2_WEIGHT;
-    beta_scale = SCALE_BLOCK3_LN2_BIAS;
+
     run_test(6);
 
     // Test 7: sparse with zeros ln_f
     $display("Test 7: sparse ln_f");
     $fwrite(fd, "Test 7: sparse ln_f\n");
     gamma_sel = 6'd34;
-    gamma_scale = SCALE_LN_F_WEIGHT;
-    beta_scale = SCALE_LN_F_BIAS;
+
     run_test(7);
 
     $display("=== All 8 tests done ===");

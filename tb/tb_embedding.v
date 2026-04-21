@@ -16,7 +16,6 @@ module tb_embedding;
   wire [2047:0] embed;
   wire done;
 
-  // Simulate weight_store: tok_emb (sel 0) and pos_emb (sel 1)
   reg [7:0] tok_mem [0:32767];
   reg [7:0] pos_mem [0:32767];
   initial begin
@@ -24,7 +23,6 @@ module tb_embedding;
     $readmemh("/home/user/red_eyes_is_all_you_need/mem/pos_emb_weight.hex", pos_mem);
   end
 
-  // Registered BRAM read with tensor_sel mux (1-cycle latency)
   reg [7:0] w_data_r;
   always @(posedge clk) begin
     case (w_sel)
@@ -35,26 +33,31 @@ module tb_embedding;
   end
   assign w_data = w_data_r;
 
-  // FP16 dequant scales from weight_scales.vh
-  `include "weight_scales.vh"
+  // Scale stub: tok_emb=0x1e50, pos_emb=0x1ed6
+  reg [15:0] w_scale;
+  always @(posedge clk) begin
+    case (w_sel)
+      6'd0: w_scale <= 16'h1e50;
+      6'd1: w_scale <= 16'h1ed6;
+      default: w_scale <= 16'd0;
+    endcase
+  end
 
-  // DUT
   embedding #(
     .DIM(128)
   ) dut (
-    .clk_i       (clk),
-    .rst_i       (rst),
-    .start_i     (start),
-    .token_id_i  (token_id),
-    .position_i  (position),
-    .tok_scale_i (SCALE_TOK_EMB_WEIGHT),
-    .pos_scale_i (SCALE_POS_EMB_WEIGHT),
-    .w_sel_o     (w_sel),
-    .w_addr_o    (w_addr),
-    .w_data_i    (w_data),
-    .embed_o     (embed),
-    .done_o      (done),
-    .busy_o      ()
+    .clk_i      (clk),
+    .rst_i      (rst),
+    .start_i    (start),
+    .token_id_i (token_id),
+    .position_i (position),
+    .w_scale_i  (w_scale),
+    .w_sel_o    (w_sel),
+    .w_addr_o   (w_addr),
+    .w_data_i   (w_data),
+    .embed_o    (embed),
+    .done_o     (done),
+    .busy_o     ()
   );
 
   integer fd, i;

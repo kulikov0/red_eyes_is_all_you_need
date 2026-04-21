@@ -1,5 +1,5 @@
 // 18 large BRAM ROMs + 1 combined LN BRAM (18x128 = 2304 bytes)
-// tensor_sel[5:0] + addr -> 8-bit weight data + 32-bit IEEE754 scale
+// tensor_sel[5:0] + addr -> 8-bit weight data + 16-bit fp16 scale
 // Latency: 1 cycle (registered BRAM read + registered sel mux)
 //
 // Tensor map (matches extract_weights.py ordering):
@@ -47,10 +47,10 @@ module weight_store (
   input  wire [ 5:0] tensor_sel_i,  // 0..35
   input  wire [15:0] addr_i,        // max depth 65536 -> 16 bits
   output reg  [ 7:0] data_o,
-  output reg  [31:0] scale_o
+  output reg  [15:0] scale_o
 );
 
-  // Scale factors (IEEE 754)
+  // FP16 scale factors
   `include "weight_scales.vh"
 
   // BRAM ROM outputs (synchronous, 1-cycle latency)
@@ -319,7 +319,7 @@ module weight_store (
     endcase
   end
 
-  // Scale LUT: tensor_sel -> 32-bit IEEE 754 scale
+  // Scale LUT: tensor_sel -> fp16 scale
   always @(posedge clk_i) begin
     case (tensor_sel_i)
       6'd0:  scale_o <= SCALE_TOK_EMB_WEIGHT;
@@ -358,7 +358,7 @@ module weight_store (
       6'd33: scale_o <= SCALE_BLOCK3_FF_DOWN_WEIGHT;
       6'd34: scale_o <= SCALE_LN_F_WEIGHT;
       6'd35: scale_o <= SCALE_LN_F_BIAS;
-      default: scale_o <= 32'd0;
+      default: scale_o <= 16'd0;
     endcase
   end
 

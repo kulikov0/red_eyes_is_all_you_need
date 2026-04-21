@@ -25,6 +25,7 @@ module transformer_layer (
   output reg  [5:0]    w_sel_o,
   output reg  [15:0]   w_addr_o,
   input  wire [7:0]    w_data_i,
+  input  wire [15:0]   w_scale_i,
 
   // K cache (fp16)
   output wire          k_we_o,
@@ -46,8 +47,6 @@ module transformer_layer (
   output reg  [2047:0] out_vec_o,
   output reg           done_o
 );
-
-  `include "weight_scales.vh"
 
   // FSM states
   localparam [3:0] S_IDLE     = 4'd0,
@@ -82,71 +81,6 @@ module transformer_layer (
   // GELU index
   reg [9:0]    gelu_idx;
 
-  // Per-layer scale muxes
-  reg [15:0] ln_gamma_scale;
-  reg [15:0] ln_beta_scale;
-  reg [15:0] ff_up_scale;
-  reg [15:0] ff_down_scale;
-
-  always @(*) begin
-    case (layer_r)
-      2'd0: begin
-        ff_up_scale   = SCALE_BLOCK0_FF_UP_WEIGHT;
-        ff_down_scale = SCALE_BLOCK0_FF_DOWN_WEIGHT;
-      end
-      2'd1: begin
-        ff_up_scale   = SCALE_BLOCK1_FF_UP_WEIGHT;
-        ff_down_scale = SCALE_BLOCK1_FF_DOWN_WEIGHT;
-      end
-      2'd2: begin
-        ff_up_scale   = SCALE_BLOCK2_FF_UP_WEIGHT;
-        ff_down_scale = SCALE_BLOCK2_FF_DOWN_WEIGHT;
-      end
-      2'd3: begin
-        ff_up_scale   = SCALE_BLOCK3_FF_UP_WEIGHT;
-        ff_down_scale = SCALE_BLOCK3_FF_DOWN_WEIGHT;
-      end
-    endcase
-  end
-
-  // LN scale mux: depends on layer_r and ln_which
-  always @(*) begin
-    case ({layer_r, ln_which})
-      3'b000: begin
-        ln_gamma_scale = SCALE_BLOCK0_LN1_WEIGHT;
-        ln_beta_scale  = SCALE_BLOCK0_LN1_BIAS;
-      end
-      3'b001: begin
-        ln_gamma_scale = SCALE_BLOCK0_LN2_WEIGHT;
-        ln_beta_scale  = SCALE_BLOCK0_LN2_BIAS;
-      end
-      3'b010: begin
-        ln_gamma_scale = SCALE_BLOCK1_LN1_WEIGHT;
-        ln_beta_scale  = SCALE_BLOCK1_LN1_BIAS;
-      end
-      3'b011: begin
-        ln_gamma_scale = SCALE_BLOCK1_LN2_WEIGHT;
-        ln_beta_scale  = SCALE_BLOCK1_LN2_BIAS;
-      end
-      3'b100: begin
-        ln_gamma_scale = SCALE_BLOCK2_LN1_WEIGHT;
-        ln_beta_scale  = SCALE_BLOCK2_LN1_BIAS;
-      end
-      3'b101: begin
-        ln_gamma_scale = SCALE_BLOCK2_LN2_WEIGHT;
-        ln_beta_scale  = SCALE_BLOCK2_LN2_BIAS;
-      end
-      3'b110: begin
-        ln_gamma_scale = SCALE_BLOCK3_LN1_WEIGHT;
-        ln_beta_scale  = SCALE_BLOCK3_LN1_BIAS;
-      end
-      3'b111: begin
-        ln_gamma_scale = SCALE_BLOCK3_LN2_WEIGHT;
-        ln_beta_scale  = SCALE_BLOCK3_LN2_BIAS;
-      end
-    endcase
-  end
-
   // LayerNorm interface (flat fp16 bus)
   reg          ln_start;
   reg  [5:0]   ln_gamma_sel;
@@ -164,8 +98,7 @@ module transformer_layer (
     .w_addr_o     (ln_w_addr),
     .w_data_i     (w_data_i),
     .gamma_sel_i  (ln_gamma_sel),
-    .gamma_scale_i(ln_gamma_scale),
-    .beta_scale_i (ln_beta_scale),
+    .w_scale_i    (w_scale_i),
     .y_o          (ln_y),
     .done_o       (ln_done),
     .busy_o       ()
@@ -198,6 +131,7 @@ module transformer_layer (
     .w_sel_o   (attn_w_sel),
     .w_addr_o  (attn_w_addr),
     .w_data_i  (w_data_i),
+    .w_scale_i (w_scale_i),
     .k_we_o    (attn_k_we),
     .k_wdata_o (attn_k_wdata),
     .k_rdata_i (k_rdata_i),
@@ -233,7 +167,7 @@ module transformer_layer (
     .rst_i        (rst_i),
     .start_i      (ff_up_start),
     .in_vec_i     (sub_out),
-    .scale_i      (ff_up_scale),
+    .scale_i      (w_scale_i),
     .weight_addr_o(ff_up_addr),
     .weight_data_i(w_data_i),
     .out_vec_o    (ff_up_out),
@@ -251,7 +185,7 @@ module transformer_layer (
     .rst_i        (rst_i),
     .start_i      (ff_down_start),
     .in_vec_i     (ff_buf),
-    .scale_i      (ff_down_scale),
+    .scale_i      (w_scale_i),
     .weight_addr_o(ff_down_addr),
     .weight_data_i(w_data_i),
     .out_vec_o    (ff_down_out),

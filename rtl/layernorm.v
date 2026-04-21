@@ -33,9 +33,7 @@ module layernorm #(
   // Which LN instance: tensor_sel for gamma, gamma+1 for beta
   input  wire [5:0]  gamma_sel_i,
 
-  // FP16 dequant scales for gamma and beta
-  input  wire [15:0] gamma_scale_i,
-  input  wire [15:0] beta_scale_i,
+  input  wire [15:0] w_scale_i,
 
   // Output: DIM x fp16 (flat bus)
   output reg  [DIM*16-1:0] y_o,
@@ -113,11 +111,8 @@ module layernorm #(
   wire [15:0] dequant_fp16;
   fp16_from_int8 u_dequant (.val_i(w_data_i), .fp16_o(dequant_fp16));
 
-  wire [15:0] dequant_gamma;
-  fp16_mul_comb u_deq_gamma (.a_i(dequant_fp16), .b_i(gamma_scale_i), .prod_o(dequant_gamma));
-
-  wire [15:0] dequant_beta;
-  fp16_mul_comb u_deq_beta (.a_i(dequant_fp16), .b_i(beta_scale_i), .prod_o(dequant_beta));
+  wire [15:0] dequant_scaled;
+  fp16_mul_comb u_deq_mul (.a_i(dequant_fp16), .b_i(w_scale_i), .prod_o(dequant_scaled));
 
   // NORM: y = (x - mean) * inv_std * gamma + beta
   wire [15:0] norm_diff;
@@ -215,7 +210,7 @@ module layernorm #(
             w_addr_o <= idx[6:0] + 7'd1;
           end
           if (idx > 0) begin
-            gamma_buf[prev[6:0]] <= dequant_gamma;
+            gamma_buf[prev[6:0]] <= dequant_scaled;
           end
           idx <= idx + 8'd1;
           if (idx == DIM[7:0]) begin
@@ -232,7 +227,7 @@ module layernorm #(
             w_addr_o <= idx[6:0] + 7'd1;
           end
           if (idx > 0) begin
-            beta_buf[prev[6:0]] <= dequant_beta;
+            beta_buf[prev[6:0]] <= dequant_scaled;
           end
           idx <= idx + 8'd1;
           if (idx == DIM[7:0]) begin

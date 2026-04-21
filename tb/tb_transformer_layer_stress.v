@@ -30,12 +30,14 @@ module tb_transformer_layer_stress;
   wire [2047:0] out_vec;
   wire done;
 
+  wire [15:0] w_scale;
+
   weight_store u_ws (
     .clk_i       (clk),
     .tensor_sel_i(w_sel),
     .addr_i      (w_addr),
     .data_o      (w_data),
-    .scale_o     ()
+    .scale_o     (w_scale)
   );
 
   // K cache (fp16, DATA_W=16)
@@ -72,6 +74,7 @@ module tb_transformer_layer_stress;
     .w_sel_o   (w_sel),
     .w_addr_o  (w_addr),
     .w_data_i  (w_data),
+    .w_scale_i (w_scale),
     .k_we_o    (k_we),
     .k_wdata_o (k_wdata),
     .k_rdata_i (k_rdata),

@@ -7,14 +7,14 @@ module tb_weight_store;
   reg  [ 5:0] tensor_sel;
   reg  [15:0] addr;
   wire [ 7:0] data;
-  wire [31:0] scale;
+  wire [15:0] w_scale;
 
   weight_store uut (
     .clk_i       (clk),
     .tensor_sel_i(tensor_sel),
     .addr_i      (addr),
     .data_o      (data),
-    .scale_o     (scale)
+    .scale_o     (w_scale)
   );
 
   // Clock: 10 ns period
@@ -115,8 +115,8 @@ module tb_weight_store;
         $fwrite(fd, "FAIL tensor %0d first: got 0x%02x, expected 0x%02x\n", i, data, exp_first[i]);
         errors = errors + 1;
       end else begin
-        $display("OK   tensor %0d  addr=0  data=0x%02x  scale=0x%08x", i, data, scale);
-        $fwrite(fd, "OK   tensor %0d  addr=0  data=0x%02x  scale=0x%08x\n", i, data, scale);
+        $display("OK   tensor %0d  addr=0  data=0x%02x  scale=0x%04x", i, data, w_scale);
+        $fwrite(fd, "OK   tensor %0d  addr=0  data=0x%02x  scale=0x%04x\n", i, data, w_scale);
       end
 
       // Test last byte (addr = last_addr)
