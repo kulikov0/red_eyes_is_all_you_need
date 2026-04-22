@@ -19,7 +19,12 @@ module transformer_layer (
   input  wire          start_i,
   input  wire [1:0]    layer_i,
   input  wire [7:0]    pos_i,
-  input  wire [2047:0] x_i,
+  output wire [6:0]    act_raddr_o,
+  input  wire [15:0]   act_rdata_i,
+
+  output reg           res_we_o,
+  output reg  [6:0]    res_waddr_o,
+  output reg  [15:0]   res_wdata_o,
 
   // Weight store interface
   output reg  [5:0]    w_sel_o,
@@ -43,22 +48,22 @@ module transformer_layer (
   output wire [7:0]    kv_pos_o,
   output wire [3:0]    kv_dim_o,
 
-  // Output
-  output reg  [2047:0] out_vec_o,
   output reg           done_o
 );
 
   // FSM states
-  localparam [3:0] S_IDLE     = 4'd0,
-                   S_LN_START = 4'd1,
-                   S_LN_WAIT  = 4'd2,
-                   S_ATTN     = 4'd3,
-                   S_RES1     = 4'd4,
-                   S_FF_UP    = 4'd5,
-                   S_GELU     = 4'd6,
-                   S_FF_DOWN  = 4'd7,
-                   S_RES2     = 4'd8,
-                   S_DONE     = 4'd9;
+  localparam [3:0] S_IDLE      = 4'd0,
+                   S_LOAD      = 4'd1,
+                   S_SAVE_RES  = 4'd2,
+                   S_LN_START  = 4'd3,
+                   S_LN_WAIT   = 4'd4,
+                   S_ATTN      = 4'd5,
+                   S_RES_ADD   = 4'd6,
+                   S_FF_UP     = 4'd7,
+                   S_GELU      = 4'd8,
+                   S_FF_DOWN   = 4'd9,
+                   S_STORE_OUT = 4'd10,
+                   S_DONE      = 4'd11;
 
   reg [3:0] state;
 
@@ -66,14 +71,11 @@ module transformer_layer (
   reg [1:0]    layer_r;
   reg [7:0]    pos_r;
 
-  // Residual register (preserved across LN+attn and LN+FF)
-  reg [2047:0] x_reg;
+  // Shared activation RAM: holds current vector
+  reg [15:0] act_ram [0:511];
 
-  // LN/attn output buffer (128 x fp16)
-  reg [2047:0] sub_out;
-
-  // FF intermediate buffer (512 x fp16)
-  reg [8191:0] ff_buf;
+  // Residual RAM: preserved across LN+attn and LN+FF
+  reg [15:0] res_ram [0:127];
 
   // LN which: 0=LN1, 1=LN2
   reg          ln_which;
@@ -81,37 +83,49 @@ module transformer_layer (
   // GELU index
   reg [9:0]    gelu_idx;
 
-  // LayerNorm interface (flat fp16 bus)
+  // Load/store index for parent RAM transfers
+  reg [7:0]    io_idx;
+  assign act_raddr_o = io_idx[6:0];
+
+  // LayerNorm: reads/writes act_ram[0:127]
   reg          ln_start;
   reg  [5:0]   ln_gamma_sel;
   wire [5:0]   ln_w_sel;
   wire [6:0]   ln_w_addr;
-  wire [2047:0] ln_y;
+  wire [6:0]   ln_x_raddr;
+  wire         ln_y_we;
+  wire [6:0]   ln_y_waddr;
+  wire [15:0]  ln_y_wdata;
   wire         ln_done;
 
   layernorm u_ln (
-    .clk_i        (clk_i),
-    .rst_i        (rst_i),
-    .start_i      (ln_start),
-    .x_i          (x_reg),
-    .w_sel_o      (ln_w_sel),
-    .w_addr_o     (ln_w_addr),
-    .w_data_i     (w_data_i),
-    .gamma_sel_i  (ln_gamma_sel),
-    .w_scale_i    (w_scale_i),
-    .y_o          (ln_y),
-    .done_o       (ln_done),
-    .busy_o       ()
+    .clk_i       (clk_i),
+    .rst_i       (rst_i),
+    .start_i     (ln_start),
+    .x_raddr_o   (ln_x_raddr),
+    .x_rdata_i   (act_ram[ln_x_raddr]),
+    .y_we_o      (ln_y_we),
+    .y_waddr_o   (ln_y_waddr),
+    .y_wdata_o   (ln_y_wdata),
+    .w_sel_o     (ln_w_sel),
+    .w_addr_o    (ln_w_addr),
+    .w_data_i    (w_data_i),
+    .gamma_sel_i (ln_gamma_sel),
+    .w_scale_i   (w_scale_i),
+    .done_o      (ln_done),
+    .busy_o      ()
   );
 
-  // Attention interface
+  // Attention: reads/writes act_ram[0:127]
   reg          attn_start;
   wire [5:0]   attn_w_sel;
   wire [15:0]  attn_w_addr;
-  wire [2047:0] attn_out;
+  wire [6:0]   attn_act_raddr;
+  wire         attn_res_we;
+  wire [6:0]   attn_res_waddr;
+  wire [15:0]  attn_res_wdata;
   wire         attn_done;
 
-  // KV wires from attention
   wire         attn_k_we;
   wire [15:0]  attn_k_wdata;
   wire         attn_v_we;
@@ -122,29 +136,33 @@ module transformer_layer (
   wire [3:0]   attn_kv_dim;
 
   attention u_attn (
-    .clk_i     (clk_i),
-    .rst_i     (rst_i),
-    .start_i   (attn_start),
-    .layer_i   (layer_r),
-    .pos_i     (pos_r),
-    .x_i       (sub_out),
-    .w_sel_o   (attn_w_sel),
-    .w_addr_o  (attn_w_addr),
-    .w_data_i  (w_data_i),
-    .w_scale_i (w_scale_i),
-    .k_we_o    (attn_k_we),
-    .k_wdata_o (attn_k_wdata),
-    .k_rdata_i (k_rdata_i),
-    .v_we_o    (attn_v_we),
-    .v_wdata_o (attn_v_wdata),
-    .v_rdata_i (v_rdata_i),
-    .kv_layer_o(attn_kv_layer),
-    .kv_head_o (attn_kv_head),
-    .kv_pos_o  (attn_kv_pos),
-    .kv_dim_o  (attn_kv_dim),
-    .out_vec_o (attn_out),
-    .done_o    (attn_done)
+    .clk_i       (clk_i),
+    .rst_i       (rst_i),
+    .start_i     (attn_start),
+    .layer_i     (layer_r),
+    .pos_i       (pos_r),
+    .act_raddr_o (attn_act_raddr),
+    .act_rdata_i (act_ram[attn_act_raddr]),
+    .res_we_o    (attn_res_we),
+    .res_waddr_o (attn_res_waddr),
+    .res_wdata_o (attn_res_wdata),
+    .w_sel_o     (attn_w_sel),
+    .w_addr_o    (attn_w_addr),
+    .w_data_i    (w_data_i),
+    .w_scale_i   (w_scale_i),
+    .k_we_o      (attn_k_we),
+    .k_wdata_o   (attn_k_wdata),
+    .k_rdata_i   (k_rdata_i),
+    .v_we_o      (attn_v_we),
+    .v_wdata_o   (attn_v_wdata),
+    .v_rdata_i   (v_rdata_i),
+    .kv_layer_o  (attn_kv_layer),
+    .kv_head_o   (attn_kv_head),
+    .kv_pos_o    (attn_kv_pos),
+    .kv_dim_o    (attn_kv_dim),
+    .done_o      (attn_done)
   );
+
 
   // KV cache pass-through from attention
   assign k_we_o     = attn_k_we;
@@ -156,41 +174,55 @@ module transformer_layer (
   assign kv_pos_o   = attn_kv_pos;
   assign kv_dim_o   = attn_kv_dim;
 
-  // FF_up matvec: 128 -> 512, fp16
+  // FF_up matvec: 128 -> 512, reads act_ram[0:127], writes act_ram[0:511]
   reg          ff_up_start;
   wire [15:0]  ff_up_addr;
-  wire [8191:0] ff_up_out;
+  wire [6:0]   ff_up_act_raddr;
+  wire         ff_up_res_we;
+  wire [8:0]   ff_up_res_waddr;
+  wire [15:0]  ff_up_res_wdata;
   wire         ff_up_done;
 
   matvec_fp16 #(.IN_DIM(128), .OUT_DIM(512)) u_ff_up (
     .clk_i        (clk_i),
     .rst_i        (rst_i),
     .start_i      (ff_up_start),
-    .in_vec_i     (sub_out),
     .scale_i      (w_scale_i),
     .weight_addr_o(ff_up_addr),
     .weight_data_i(w_data_i),
-    .out_vec_o    (ff_up_out),
+    .act_raddr_o  (ff_up_act_raddr),
+    .act_rdata_i  (act_ram[ff_up_act_raddr]),
+    .res_we_o     (ff_up_res_we),
+    .res_waddr_o  (ff_up_res_waddr),
+    .res_wdata_o  (ff_up_res_wdata),
     .done_o       (ff_up_done)
   );
 
-  // FF_down matvec: 512 -> 128, fp16
+
+  // FF_down matvec: 512 -> 128, reads act_ram[0:511], writes act_ram[0:127]
   reg          ff_down_start;
   wire [15:0]  ff_down_addr;
-  wire [2047:0] ff_down_out;
+  wire [8:0]   ff_down_act_raddr;
+  wire         ff_down_res_we;
+  wire [6:0]   ff_down_res_waddr;
+  wire [15:0]  ff_down_res_wdata;
   wire         ff_down_done;
 
   matvec_fp16 #(.IN_DIM(512), .OUT_DIM(128)) u_ff_down (
     .clk_i        (clk_i),
     .rst_i        (rst_i),
     .start_i      (ff_down_start),
-    .in_vec_i     (ff_buf),
     .scale_i      (w_scale_i),
     .weight_addr_o(ff_down_addr),
     .weight_data_i(w_data_i),
-    .out_vec_o    (ff_down_out),
+    .act_raddr_o  (ff_down_act_raddr),
+    .act_rdata_i  (act_ram[ff_down_act_raddr]),
+    .res_we_o     (ff_down_res_we),
+    .res_waddr_o  (ff_down_res_waddr),
+    .res_wdata_o  (ff_down_res_wdata),
     .done_o       (ff_down_done)
   );
+
 
   // GELU (fp16 PWL, 2-cycle pipeline)
   reg         gelu_valid_in;
@@ -205,34 +237,14 @@ module transformer_layer (
     .y_o    (gelu_out)
   );
 
-  // Residual 1: fp16 add (combinational)
-  wire [2047:0] res1_sum;
-  genvar gi;
-  generate
-    for (gi = 0; gi < 128; gi = gi + 1) begin : gen_res1
-      wire [15:0] res1_fp16;
-      fp16_add_comb u_res1 (
-        .a_i  (sub_out[gi*16 +: 16]),
-        .b_i  (x_reg[gi*16 +: 16]),
-        .sum_o(res1_fp16)
-      );
-      assign res1_sum[gi*16 +: 16] = res1_fp16;
-    end
-  endgenerate
-
-  // Residual 2: fp16 add (combinational)
-  wire [2047:0] res2_sum;
-  generate
-    for (gi = 0; gi < 128; gi = gi + 1) begin : gen_res2
-      wire [15:0] res2_fp16;
-      fp16_add_comb u_res2 (
-        .a_i  (ff_down_out[gi*16 +: 16]),
-        .b_i  (x_reg[gi*16 +: 16]),
-        .sum_o(res2_fp16)
-      );
-      assign res2_sum[gi*16 +: 16] = res2_fp16;
-    end
-  endgenerate
+  // Sequential residual add: act_ram[i] + res_ram[i] -> act_ram[i]
+  reg [7:0] res_idx;
+  wire [15:0] res_add_out;
+  fp16_add_comb u_res_add (
+    .a_i  (act_ram[res_idx[6:0]]),
+    .b_i  (res_ram[res_idx[6:0]]),
+    .sum_o(res_add_out)
+  );
 
   // Weight store mux (active sel depends on FSM state)
   always @(*) begin
@@ -265,6 +277,7 @@ module transformer_layer (
     if (rst_i) begin
       state         <= S_IDLE;
       done_o        <= 1'b0;
+      res_we_o      <= 1'b0;
       ln_start      <= 1'b0;
       attn_start    <= 1'b0;
       ff_up_start   <= 1'b0;
@@ -272,6 +285,7 @@ module transformer_layer (
       gelu_valid_in <= 1'b0;
     end else begin
       done_o        <= 1'b0;
+      res_we_o      <= 1'b0;
       ln_start      <= 1'b0;
       attn_start    <= 1'b0;
       ff_up_start   <= 1'b0;
@@ -284,13 +298,31 @@ module transformer_layer (
           if (start_i) begin
             layer_r  <= layer_i;
             pos_r    <= pos_i;
-            x_reg    <= x_i;
             ln_which <= 1'b0;
-            state    <= S_LN_START;
+            io_idx   <= 8'd0;
+            state    <= S_LOAD;
           end
         end
 
-        // Assert ln_start for 1 cycle, set gamma_sel based on ln_which
+        // Load 128 elements from parent shared RAM into act_ram
+        S_LOAD: begin
+          act_ram[io_idx[6:0]] <= act_rdata_i;
+          io_idx <= io_idx + 8'd1;
+          if (io_idx == 8'd127) begin
+            state  <= S_SAVE_RES;
+            io_idx <= 8'd0;
+          end
+        end
+
+        // Copy act_ram[0:127] to res_ram for residual add later
+        S_SAVE_RES: begin
+          res_ram[io_idx[6:0]] <= act_ram[io_idx[6:0]];
+          io_idx <= io_idx + 8'd1;
+          if (io_idx == 8'd127) begin
+            state <= S_LN_START;
+          end
+        end
+
         S_LN_START: begin
           ln_start <= 1'b1;
           if (ln_which == 1'b0) begin
@@ -301,10 +333,10 @@ module transformer_layer (
           state <= S_LN_WAIT;
         end
 
-        // Wait for layernorm to complete, capture flat bus output
         S_LN_WAIT: begin
+          if (ln_y_we)
+            act_ram[ln_y_waddr] <= ln_y_wdata;
           if (ln_done) begin
-            sub_out <= ln_y;
             if (ln_which == 1'b0) begin
               state      <= S_ATTN;
               attn_start <= 1'b1;
@@ -315,43 +347,51 @@ module transformer_layer (
           end
         end
 
-        // Wait for attention to complete
         S_ATTN: begin
+          if (attn_res_we)
+            act_ram[attn_res_waddr] <= attn_res_wdata;
           if (attn_done) begin
-            sub_out <= attn_out;
-            state   <= S_RES1;
+            state   <= S_RES_ADD;
+            res_idx <= 8'd0;
           end
         end
 
-        // Residual add: x_reg = fp16_add(sub_out, x_reg)
-        S_RES1: begin
-          x_reg    <= res1_sum;
-          ln_which <= 1'b1;
-          state    <= S_LN_START;
+        // Sequential residual add: act_ram[i] = act_ram[i] + res_ram[i]
+        S_RES_ADD: begin
+          act_ram[res_idx[6:0]] <= res_add_out;
+          res_idx <= res_idx + 8'd1;
+          if (res_idx == 8'd127) begin
+            if (ln_which == 1'b0) begin
+              // After res1: save new residual, do LN2
+              ln_which <= 1'b1;
+              io_idx   <= 8'd0;
+              state    <= S_SAVE_RES;
+            end else begin
+              // After res2: store output to parent RAM
+              io_idx <= 8'd0;
+              state  <= S_STORE_OUT;
+            end
+          end
         end
 
-        // Wait for FF_up to complete
         S_FF_UP: begin
+          if (ff_up_res_we)
+            act_ram[ff_up_res_waddr] <= ff_up_res_wdata;
           if (ff_up_done) begin
-            ff_buf   <= ff_up_out;
             state    <= S_GELU;
             gelu_idx <= 10'd0;
           end
         end
 
-        // GELU: 3-cycle pipeline (FSM reg + 2 GELU stages)
-        // Cycle 0: gelu_in <= ff_buf[0]
-        // Cycle 1: gelu_in <= ff_buf[1], GELU stage 1 latches ff_buf[0]
-        // Cycle 2: gelu_in <= ff_buf[2], GELU stage 2 latches, y_o updating
-        // Cycle 3: gelu_in <= ff_buf[3], gelu_out = GELU(ff_buf[0]) -> capture
+        // GELU: 3-cycle pipeline, reads/writes act_ram in-place
         S_GELU: begin
           if (gelu_idx <= 10'd511) begin
-            gelu_in       <= ff_buf[gelu_idx*16 +: 16];
+            gelu_in       <= act_ram[gelu_idx[8:0]];
             gelu_valid_in <= 1'b1;
           end
 
           if (gelu_idx >= 10'd3) begin
-            ff_buf[(gelu_idx - 10'd3)*16 +: 16] <= gelu_out;
+            act_ram[gelu_idx[8:0] - 9'd3] <= gelu_out;
           end
 
           gelu_idx <= gelu_idx + 10'd1;
@@ -362,11 +402,23 @@ module transformer_layer (
           end
         end
 
-        // Wait for FF_down to complete
         S_FF_DOWN: begin
+          if (ff_down_res_we)
+            act_ram[ff_down_res_waddr] <= ff_down_res_wdata;
           if (ff_down_done) begin
-            out_vec_o <= res2_sum;
-            state     <= S_DONE;
+            state   <= S_RES_ADD;
+            res_idx <= 8'd0;
+          end
+        end
+
+        // Copy act_ram[0:127] to parent shared RAM
+        S_STORE_OUT: begin
+          res_we_o    <= 1'b1;
+          res_waddr_o <= io_idx[6:0];
+          res_wdata_o <= act_ram[io_idx[6:0]];
+          io_idx <= io_idx + 8'd1;
+          if (io_idx == 8'd127) begin
+            state <= S_DONE;
           end
         end
 

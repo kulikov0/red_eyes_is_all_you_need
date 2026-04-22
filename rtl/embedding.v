@@ -25,8 +25,11 @@ module embedding #(
   output reg  [15:0] w_addr_o,
   input  wire [7:0]  w_data_i,
 
-  // Output: 128 x fp16
-  output reg  [DIM*16-1:0] embed_o,
+  // Result write to shared RAM
+  output reg                     res_we_o,
+  output reg  [$clog2(DIM)-1:0]  res_waddr_o,
+  output reg  [15:0]             res_wdata_o,
+
   output reg               done_o,
   output reg               busy_o
 );
@@ -34,6 +37,7 @@ module embedding #(
   localparam S_IDLE     = 2'd0;
   localparam S_READ_TOK = 2'd1;
   localparam S_READ_POS = 2'd2;
+  localparam S_DONE     = 2'd3;
 
   reg [1:0] state;
   reg [7:0] idx;
@@ -72,14 +76,16 @@ module embedding #(
     if (rst_i) begin
       state    <= S_IDLE;
       idx      <= 8'd0;
-      done_o   <= 1'b0;
-      busy_o   <= 1'b0;
+      done_o      <= 1'b0;
+      busy_o      <= 1'b0;
+      res_we_o    <= 1'b0;
       w_sel_o     <= 6'd0;
       w_addr_o    <= 16'd0;
       tok_scale_r <= 16'd0;
 
     end else begin
-      done_o <= 1'b0;
+      done_o   <= 1'b0;
+      res_we_o <= 1'b0;
 
       case (state)
 
@@ -120,14 +126,20 @@ module embedding #(
             w_addr_o <= {1'b0, pos_base} + {8'd0, idx} + 16'd1;
           end
           if (idx > 0) begin
-            embed_o[prev[6:0]*16 +: 16] <= sum_fp16;
+            res_we_o    <= 1'b1;
+            res_waddr_o <= prev[$clog2(DIM)-1:0];
+            res_wdata_o <= sum_fp16;
           end
           idx <= idx + 8'd1;
           if (idx == DIM[7:0]) begin
-            state  <= S_IDLE;
-            done_o <= 1'b1;
-            busy_o <= 1'b0;
+            state <= S_DONE;
           end
+        end
+
+        S_DONE: begin
+          done_o <= 1'b1;
+          busy_o <= 1'b0;
+          state  <= S_IDLE;
         end
 
         default: state <= S_IDLE;

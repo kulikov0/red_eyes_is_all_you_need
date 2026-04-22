@@ -96,10 +96,8 @@ module tb_fp16;
   // matvec_fp16 test 1: 4x4
   localparam T1_IN = 4, T1_OUT = 4;
   reg                              mv1_start;
-  reg  [T1_IN*16-1:0]             mv1_in;
   reg  [15:0]                     mv1_scale;
   wire [$clog2(T1_OUT*T1_IN)-1:0] mv1_waddr;
-  wire [T1_OUT*16-1:0]            mv1_out;
   wire                            mv1_done;
   reg signed [7:0] mv1_wmem [0:T1_OUT*T1_IN-1];
   reg signed [7:0] mv1_wdata;
@@ -109,12 +107,22 @@ module tb_fp16;
   end
   always @(posedge clk) mv1_wdata <= mv1_wmem[mv1_waddr];
 
+  reg  [15:0] mv1_act [0:T1_IN-1];
+  reg  [15:0] mv1_res [0:T1_OUT-1];
+  wire [$clog2(T1_IN)-1:0]  mv1_raddr;
+  wire                      mv1_rwe;
+  wire [$clog2(T1_OUT)-1:0] mv1_rwaddr;
+  wire [15:0]               mv1_rwdata;
+
   matvec_fp16 #(.IN_DIM(T1_IN), .OUT_DIM(T1_OUT)) u_mv1 (
     .clk_i(clk), .rst_i(rst), .start_i(mv1_start),
-    .in_vec_i(mv1_in), .scale_i(mv1_scale),
+    .scale_i(mv1_scale),
     .weight_addr_o(mv1_waddr), .weight_data_i(mv1_wdata),
-    .out_vec_o(mv1_out), .done_o(mv1_done)
+    .act_raddr_o(mv1_raddr), .act_rdata_i(mv1_act[mv1_raddr]),
+    .res_we_o(mv1_rwe), .res_waddr_o(mv1_rwaddr), .res_wdata_o(mv1_rwdata),
+    .done_o(mv1_done)
   );
+  always @(posedge clk) if (mv1_rwe) mv1_res[mv1_rwaddr] <= mv1_rwdata;
 
   reg [15:0] mv1_iv [0:T1_IN-1];
   reg [15:0] mv1_exp [0:T1_OUT-1];
@@ -126,10 +134,8 @@ module tb_fp16;
   // matvec_fp16 test 2: 8x4
   localparam T2_IN = 4, T2_OUT = 8;
   reg                              mv2_start;
-  reg  [T2_IN*16-1:0]             mv2_in;
   reg  [15:0]                     mv2_scale;
   wire [$clog2(T2_OUT*T2_IN)-1:0] mv2_waddr;
-  wire [T2_OUT*16-1:0]            mv2_out;
   wire                            mv2_done;
   reg signed [7:0] mv2_wmem [0:T2_OUT*T2_IN-1];
   reg signed [7:0] mv2_wdata;
@@ -139,12 +145,22 @@ module tb_fp16;
   end
   always @(posedge clk) mv2_wdata <= mv2_wmem[mv2_waddr];
 
+  reg  [15:0] mv2_act [0:T2_IN-1];
+  reg  [15:0] mv2_res [0:T2_OUT-1];
+  wire [$clog2(T2_IN)-1:0]  mv2_raddr;
+  wire                      mv2_rwe;
+  wire [$clog2(T2_OUT)-1:0] mv2_rwaddr;
+  wire [15:0]               mv2_rwdata;
+
   matvec_fp16 #(.IN_DIM(T2_IN), .OUT_DIM(T2_OUT)) u_mv2 (
     .clk_i(clk), .rst_i(rst), .start_i(mv2_start),
-    .in_vec_i(mv2_in), .scale_i(mv2_scale),
+    .scale_i(mv2_scale),
     .weight_addr_o(mv2_waddr), .weight_data_i(mv2_wdata),
-    .out_vec_o(mv2_out), .done_o(mv2_done)
+    .act_raddr_o(mv2_raddr), .act_rdata_i(mv2_act[mv2_raddr]),
+    .res_we_o(mv2_rwe), .res_waddr_o(mv2_rwaddr), .res_wdata_o(mv2_rwdata),
+    .done_o(mv2_done)
   );
+  always @(posedge clk) if (mv2_rwe) mv2_res[mv2_rwaddr] <= mv2_rwdata;
 
   reg [15:0] mv2_iv [0:T2_IN-1];
   reg [15:0] mv2_exp [0:T2_OUT-1];
@@ -161,7 +177,6 @@ module tb_fp16;
     cvt_in = 8'd0; to_in = 16'd0; q167_in = 16'd0; q115_in = 16'd0;
     rsqrt_valid_in = 1'b0; rsqrt_in = 16'd0;
     mv1_start = 1'b0; mv2_start = 1'b0;
-    mv1_in = 0; mv2_in = 0;
     mv1_scale = 16'h2c00; mv2_scale = 16'h2c00;
     errors = 0;
 
@@ -363,7 +378,7 @@ module tb_fp16;
     $display("=== matvec_fp16 4x4 ===");
     $fwrite(fd, "=== matvec_fp16 4x4 ===\n");
     for (ri = 0; ri < T1_IN; ri = ri + 1)
-      mv1_in[ri*16 +: 16] = mv1_iv[ri];
+      mv1_act[ri] = mv1_iv[ri];
     @(posedge clk);
     mv1_start = 1'b1;
     @(posedge clk);
@@ -372,7 +387,7 @@ module tb_fp16;
     @(posedge clk); #1;
     for (ri = 0; ri < T1_OUT; ri = ri + 1) begin : mv1_chk
       reg [15:0] got, expected;
-      got = mv1_out[ri*16 +: 16];
+      got = mv1_res[ri];
       expected = mv1_exp[ri];
       if (got !== expected) begin
         $fwrite(fd, "MV1 [%0d] got=%04x exp=%04x FAIL\n", ri, got, expected);
@@ -387,7 +402,7 @@ module tb_fp16;
     $display("=== matvec_fp16 8x4 ===");
     $fwrite(fd, "=== matvec_fp16 8x4 ===\n");
     for (ri = 0; ri < T2_IN; ri = ri + 1)
-      mv2_in[ri*16 +: 16] = mv2_iv[ri];
+      mv2_act[ri] = mv2_iv[ri];
     @(posedge clk);
     mv2_start = 1'b1;
     @(posedge clk);
@@ -396,7 +411,7 @@ module tb_fp16;
     @(posedge clk); #1;
     for (ri = 0; ri < T2_OUT; ri = ri + 1) begin : mv2_chk
       reg [15:0] got, expected;
-      got = mv2_out[ri*16 +: 16];
+      got = mv2_res[ri];
       expected = mv2_exp[ri];
       if (got !== expected) begin
         $fwrite(fd, "MV2 [%0d] got=%04x exp=%04x FAIL\n", ri, got, expected);

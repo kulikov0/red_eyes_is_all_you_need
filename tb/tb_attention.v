@@ -9,14 +9,22 @@ module tb_attention;
   reg start = 1'b0;
   reg [1:0] layer;
   reg [7:0] pos;
-  reg [2047:0] x_in;
+  reg  [15:0] act_reg [0:127];
+  reg  [15:0] res_reg [0:127];
+  wire [6:0]  act_raddr;
+  wire        res_we;
+  wire [6:0]  res_waddr;
+  wire [15:0] res_wdata;
 
-  // Attention <-> weight store
+  always @(posedge clk) begin
+    if (res_we)
+      res_reg[res_waddr] <= res_wdata;
+  end
+
   wire [5:0]  w_sel;
   wire [15:0] w_addr;
   wire [7:0]  w_data;
 
-  // Attention <-> KV caches (both fp16)
   wire [1:0]  kv_layer;
   wire [2:0]  kv_head;
   wire [7:0]  kv_pos;
@@ -28,7 +36,6 @@ module tb_attention;
   wire [15:0] v_wdata;
   wire [15:0] v_rdata;
 
-  wire [2047:0] out_vec;
   wire done;
 
   wire [15:0] w_scale;
@@ -70,26 +77,29 @@ module tb_attention;
   attention dut (
     .clk_i     (clk),
     .rst_i     (rst),
-    .start_i   (start),
-    .layer_i   (layer),
-    .pos_i     (pos),
-    .x_i       (x_in),
-    .w_sel_o   (w_sel),
-    .w_addr_o  (w_addr),
-    .w_data_i  (w_data),
-    .w_scale_i (w_scale),
-    .k_we_o    (k_we),
-    .k_wdata_o (k_wdata),
-    .k_rdata_i (k_rdata),
-    .v_we_o    (v_we),
-    .v_wdata_o (v_wdata),
-    .v_rdata_i (v_rdata),
-    .kv_layer_o(kv_layer),
-    .kv_head_o (kv_head),
-    .kv_pos_o  (kv_pos),
-    .kv_dim_o  (kv_dim),
-    .out_vec_o (out_vec),
-    .done_o    (done)
+    .start_i    (start),
+    .layer_i    (layer),
+    .pos_i      (pos),
+    .act_raddr_o(act_raddr),
+    .act_rdata_i(act_reg[act_raddr]),
+    .res_we_o   (res_we),
+    .res_waddr_o(res_waddr),
+    .res_wdata_o(res_wdata),
+    .w_sel_o    (w_sel),
+    .w_addr_o   (w_addr),
+    .w_data_i   (w_data),
+    .w_scale_i  (w_scale),
+    .k_we_o     (k_we),
+    .k_wdata_o  (k_wdata),
+    .k_rdata_i  (k_rdata),
+    .v_we_o     (v_we),
+    .v_wdata_o  (v_wdata),
+    .v_rdata_i  (v_rdata),
+    .kv_layer_o (kv_layer),
+    .kv_head_o  (kv_head),
+    .kv_pos_o   (kv_pos),
+    .kv_dim_o   (kv_dim),
+    .done_o     (done)
   );
 
   integer fd, i;
@@ -128,7 +138,7 @@ module tb_attention;
     begin
       for (k = 0; k < 128; k = k + 1) begin
         val = (seed + k) & 8'hFF;
-        x_in[k*16 +: 16] = int8_to_fp16(val);
+        act_reg[k] = int8_to_fp16(val);
       end
     end
   endtask
@@ -154,7 +164,7 @@ module tb_attention;
       $fwrite(fd, "TEST %0d LAYER=%0d POS=%0d SEED=%0d\n",
               test_num, t_layer, t_pos, seed);
       for (i = 0; i < 128; i = i + 1) begin
-        $fwrite(fd, "OUT[%0d]=%04x\n", i, out_vec[i*16 +: 16]);
+        $fwrite(fd, "OUT[%0d]=%04x\n", i, res_reg[i]);
       end
 
       $display("Test %0d done: layer=%0d pos=%0d seed=%0d",
@@ -168,7 +178,9 @@ module tb_attention;
 
     layer = 2'd0;
     pos   = 8'd0;
-    x_in  = {2048{1'b0}};
+    for (i = 0; i < 128; i = i + 1) begin
+      act_reg[i] = 16'd0;
+    end
 
     // Reset
     rst = 1'b1;

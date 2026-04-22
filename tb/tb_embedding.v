@@ -13,8 +13,17 @@ module tb_embedding;
   wire [5:0]  w_sel;
   wire [15:0] w_addr;
   wire [7:0]  w_data;
-  wire [2047:0] embed;
   wire done;
+
+  reg  [15:0] embed [0:127];
+  wire        emb_we;
+  wire [6:0]  emb_waddr;
+  wire [15:0] emb_wdata;
+
+  always @(posedge clk) begin
+    if (emb_we)
+      embed[emb_waddr] <= emb_wdata;
+  end
 
   reg [7:0] tok_mem [0:32767];
   reg [7:0] pos_mem [0:32767];
@@ -55,7 +64,9 @@ module tb_embedding;
     .w_sel_o    (w_sel),
     .w_addr_o   (w_addr),
     .w_data_i   (w_data),
-    .embed_o    (embed),
+    .res_we_o   (emb_we),
+    .res_waddr_o(emb_waddr),
+    .res_wdata_o(emb_wdata),
     .done_o     (done),
     .busy_o     ()
   );
@@ -80,7 +91,7 @@ module tb_embedding;
 
       for (i = 0; i < 128; i = i + 1) begin
         $fwrite(fd, "T=%0d TOK=%0d POS=%0d I=%0d OUT=%04x\n",
-                test_num, tok, pos, i, embed[i*16 +: 16]);
+                test_num, tok, pos, i, embed[i]);
       end
 
       $display("Test %0d done: tok=%0d pos=%0d", test_num, tok, pos);

@@ -1,32 +1,41 @@
 // Matrix-vector multiply: int8 weights x fp16 input -> fp16 output
 //
-// Weights read from BRAM as int8, dequantized to fp16 at runtime:
-//   dequant_w = fp16_from_int8(w) * scale_i (combinational)
-//   acc += dequant_w * in_vec[col] (combinational mul + add, registered acc)
+// Snapshots input from shared RAM into internal distributed RAM, then computes.
+// Writes result to shared RAM. Safe when input/output share the same RAM.
 //
-// 1 cycle per element after initial BRAM prefetch
-// Latency: OUT_DIM * IN_DIM + 2 cycles
+// Latency: IN_DIM + OUT_DIM * IN_DIM + 2 cycles
 
 module matvec_fp16 #(
   parameter IN_DIM  = 128,
   parameter OUT_DIM = 128
 ) (
-  input  wire                             clk_i,
-  input  wire                             rst_i,
-  input  wire                             start_i,
-  input  wire [IN_DIM*16-1:0]             in_vec_i,
-  input  wire [15:0]                      scale_i,
+  input  wire        clk_i,
+  input  wire        rst_i,
+  input  wire        start_i,
+  input  wire [15:0] scale_i,
+
+  // Weight BRAM
   output reg [$clog2(OUT_DIM*IN_DIM)-1:0] weight_addr_o,
   input  wire signed [7:0]                weight_data_i,
-  output reg [OUT_DIM*16-1:0]             out_vec_o,
-  output reg                              done_o
+
+  output reg [$clog2(IN_DIM)-1:0] act_raddr_o,
+  input  wire [15:0]              act_rdata_i,
+
+  output reg                        res_we_o,
+  output reg  [$clog2(OUT_DIM)-1:0] res_waddr_o,
+  output reg  [15:0]                res_wdata_o,
+
+  output reg  done_o
 );
 
   localparam ADDR_W = $clog2(OUT_DIM * IN_DIM);
   localparam COL_W  = $clog2(IN_DIM) + 1;
   localparam ROW_W  = $clog2(OUT_DIM) + 1;
 
-  // Dequant pipeline: int8 -> fp16 -> fp16*scale (all combinational)
+  // Internal snapshot of input vector
+  reg [15:0] in_snap [0:IN_DIM-1];
+
+  // Dequant: int8 -> fp16 -> fp16*scale
   wire [15:0] w_fp16;
   fp16_from_int8 u_dequant_cvt (
     .val_i(weight_data_i),
@@ -40,14 +49,13 @@ module matvec_fp16 #(
     .prod_o(w_dequant)
   );
 
-  // MAC: dequant_w * in_vec[col] + acc (all combinational, acc registered)
+  // MAC: dequant_w * in_snap[col] + acc
   reg [COL_W-1:0] col;
-  wire [15:0] act_val = in_vec_i[col*16 +: 16];
 
   wire [15:0] mac_prod;
   fp16_mul_comb u_mac_mul (
     .a_i(w_dequant),
-    .b_i(act_val),
+    .b_i(in_snap[col]),
     .prod_o(mac_prod)
   );
 
@@ -60,27 +68,44 @@ module matvec_fp16 #(
   );
 
   reg [ROW_W-1:0] row;
-  reg running;
+  reg loading;
   reg prefetch;
+  reg running;
 
   always @(posedge clk_i) begin
     if (rst_i) begin
       acc           <= 16'd0;
       col           <= {COL_W{1'b0}};
       row           <= {ROW_W{1'b0}};
-      running       <= 1'b0;
+      loading       <= 1'b0;
       prefetch      <= 1'b0;
+      running       <= 1'b0;
       done_o        <= 1'b0;
+      res_we_o      <= 1'b0;
+      act_raddr_o   <= {$clog2(IN_DIM){1'b0}};
       weight_addr_o <= {ADDR_W{1'b0}};
 
     end else if (start_i) begin
-      acc           <= 16'd0;
-      col           <= {COL_W{1'b0}};
-      row           <= {ROW_W{1'b0}};
+      loading       <= 1'b1;
+      prefetch      <= 1'b0;
       running       <= 1'b0;
-      prefetch      <= 1'b1;
+      act_raddr_o   <= {$clog2(IN_DIM){1'b0}};
+      col           <= {COL_W{1'b0}};
       done_o        <= 1'b0;
-      weight_addr_o <= {ADDR_W{1'b0}};
+      res_we_o      <= 1'b0;
+
+    end else if (loading) begin
+      in_snap[act_raddr_o] <= act_rdata_i;
+      if (act_raddr_o == (IN_DIM - 1)) begin
+        loading       <= 1'b0;
+        prefetch      <= 1'b1;
+        col           <= {COL_W{1'b0}};
+        row           <= {ROW_W{1'b0}};
+        acc           <= 16'd0;
+        weight_addr_o <= {ADDR_W{1'b0}};
+      end else begin
+        act_raddr_o <= act_raddr_o + 1;
+      end
 
     end else if (prefetch) begin
       prefetch      <= 1'b0;
@@ -88,10 +113,12 @@ module matvec_fp16 #(
       weight_addr_o <= weight_addr_o + 1;
 
     end else if (running) begin
+      res_we_o <= 1'b0;
 
       if (col == IN_DIM[COL_W-1:0] - 1) begin
-        // Last element of row
-        out_vec_o[row*16 +: 16] <= acc_sum;
+        res_we_o    <= 1'b1;
+        res_waddr_o <= row[$clog2(OUT_DIM)-1:0];
+        res_wdata_o <= acc_sum;
 
         col <= {COL_W{1'b0}};
         acc <= 16'd0;
@@ -102,8 +129,6 @@ module matvec_fp16 #(
           running <= 1'b0;
           done_o  <= 1'b1;
         end
-        // Otherwise: running stays 1, next cycle processes col=0 of next row
-        // BRAM address was already advanced, so weight_data_i will have first weight of next row
 
       end else begin
         acc           <= acc_sum;
@@ -112,7 +137,8 @@ module matvec_fp16 #(
       end
 
     end else begin
-      done_o <= 1'b0;
+      done_o   <= 1'b0;
+      res_we_o <= 1'b0;
     end
   end
 
@@ -151,7 +177,7 @@ module fp16_add_comb (
   wire [10:0] sm_mant = a_ge_b ? b_full : a_full;
   wire [4:0]  sm_exp  = a_ge_b ? b_exp  : a_exp;
 
-  wire [4:0] exp_diff = lg_exp - sm_exp;
+  wire [4:0]  exp_diff = lg_exp - sm_exp;
   wire [13:0] lg_ext = {1'b0, lg_mant, 2'b00};
   wire [26:0] sm_wide = {1'b0, sm_mant, 2'b00, 13'b0};
   wire [26:0] sm_shifted = sm_wide >> exp_diff;

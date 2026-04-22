@@ -22,23 +22,23 @@ module layernorm #(
   input  wire        rst_i,
   input  wire        start_i,
 
-  // Input: DIM x fp16 (flat bus)
-  input  wire [DIM*16-1:0] x_i,
+  output wire [$clog2(DIM)-1:0] x_raddr_o,
+  input  wire [15:0]            x_rdata_i,
+
+  output reg                     y_we_o,
+  output reg  [$clog2(DIM)-1:0]  y_waddr_o,
+  output reg  [15:0]             y_wdata_o,
 
   // Weight store interface for gamma/beta
   output reg  [5:0]  w_sel_o,
   output reg  [6:0]  w_addr_o,
   input  wire [7:0]  w_data_i,
 
-  // Which LN instance: tensor_sel for gamma, gamma+1 for beta
   input  wire [5:0]  gamma_sel_i,
-
   input  wire [15:0] w_scale_i,
 
-  // Output: DIM x fp16 (flat bus)
-  output reg  [DIM*16-1:0] y_o,
-  output reg               done_o,
-  output reg               busy_o
+  output reg         done_o,
+  output reg         busy_o
 );
 
   localparam S_IDLE       = 4'd0;
@@ -50,6 +50,7 @@ module layernorm #(
   localparam S_LOAD_GAMMA = 4'd6;
   localparam S_LOAD_BETA  = 4'd7;
   localparam S_NORM       = 4'd8;
+  localparam S_LN_DONE    = 4'd9;
 
   reg [3:0] state;
   reg [7:0] idx;
@@ -64,8 +65,8 @@ module layernorm #(
   reg [15:0] gamma_buf [0:DIM-1];
   reg [15:0] beta_buf  [0:DIM-1];
 
-  // Current input element
-  wire [15:0] x_elem = x_i[idx[6:0]*16 +: 16];
+  assign x_raddr_o = idx[$clog2(DIM)-1:0];
+  wire [15:0] x_elem = x_rdata_i;
 
   // fp16(1/128) = 0x2000: sign=0, exp=8, frac=0 -> 2^(8-15) = 2^-7 = 1/128
   localparam [15:0] INV_N = 16'h2000;
@@ -141,12 +142,14 @@ module layernorm #(
       rsqrt_valid <= 1'b0;
       done_o      <= 1'b0;
       busy_o      <= 1'b0;
+      y_we_o      <= 1'b0;
       w_sel_o     <= 6'd0;
       w_addr_o    <= 7'd0;
 
     end else begin
       done_o      <= 1'b0;
       rsqrt_valid <= 1'b0;
+      y_we_o      <= 1'b0;
 
       case (state)
 
@@ -238,13 +241,19 @@ module layernorm #(
 
         // Pass 3: normalize and output
         S_NORM: begin
-          y_o[idx[6:0]*16 +: 16] <= norm_out;
+          y_we_o    <= 1'b1;
+          y_waddr_o <= idx[$clog2(DIM)-1:0];
+          y_wdata_o <= norm_out;
           idx <= idx + 8'd1;
           if (idx == DIM[7:0] - 8'd1) begin
-            state  <= S_IDLE;
-            done_o <= 1'b1;
-            busy_o <= 1'b0;
+            state <= S_LN_DONE;
           end
+        end
+
+        S_LN_DONE: begin
+          done_o <= 1'b1;
+          busy_o <= 1'b0;
+          state  <= S_IDLE;
         end
 
         default: state <= S_IDLE;

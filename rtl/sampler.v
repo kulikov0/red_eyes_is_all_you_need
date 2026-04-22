@@ -12,7 +12,8 @@ module sampler (
   input  wire             clk_i,
   input  wire             rst_i,
   input  wire             start_i,
-  input  wire [256*16-1:0] logits_i,
+  output wire [7:0]       logit_raddr_o,
+  input  wire [15:0]      logit_rdata_i,
   output reg  [7:0]       token_o,
   output reg              done_o
 );
@@ -26,7 +27,8 @@ module sampler (
   reg [15:0] best_val;
   reg [7:0]  best_idx;
 
-  wire [15:0] cur_logit = logits_i[scan_idx[7:0]*16 +: 16];
+  assign logit_raddr_o = scan_idx[7:0];
+  wire [15:0] cur_logit = logit_rdata_i;
 
   // FP16 greater-than comparison (a > b)
   // Handles positive and negative values correctly

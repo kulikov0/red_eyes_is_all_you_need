@@ -31,7 +31,12 @@ module attention (
   input  wire          start_i,
   input  wire [1:0]    layer_i,
   input  wire [7:0]    pos_i,
-  input  wire [2047:0] x_i,
+  output wire [6:0]    act_raddr_o,
+  input  wire [15:0]   act_rdata_i,
+
+  output reg           res_we_o,
+  output reg  [6:0]    res_waddr_o,
+  output reg  [15:0]   res_wdata_o,
 
   // Weight store
   output wire [5:0]    w_sel_o,
@@ -55,8 +60,6 @@ module attention (
   output reg  [7:0]    kv_pos_o,
   output reg  [3:0]    kv_dim_o,
 
-  // Output
-  output reg  [2047:0] out_vec_o,
   output reg           done_o
 );
 
@@ -85,42 +88,70 @@ module attention (
   // Head iteration
   reg [2:0] head_idx;
 
-  // QKV matvec (fp16 output)
+  // Internal distributed RAMs for QKV output and head output
+  reg [15:0] qkv_ram [0:383];
+  reg [15:0] head_ram [0:127];
+
+  // QKV matvec: reads from shared RAM, writes to qkv_ram
   reg         qkv_start;
   wire [15:0] qkv_addr;
-  wire [384*16-1:0] qkv_out;
+  wire [6:0]  qkv_act_raddr;
+  wire        qkv_res_we;
+  wire [8:0]  qkv_res_waddr;
+  wire [15:0] qkv_res_wdata;
   wire        qkv_done;
 
   matvec_fp16 #(.IN_DIM(128), .OUT_DIM(384)) u_qkv (
     .clk_i        (clk_i),
     .rst_i        (rst_i),
     .start_i      (qkv_start),
-    .in_vec_i     (x_i),
     .scale_i      (w_scale_i),
     .weight_addr_o(qkv_addr),
     .weight_data_i(w_data_i),
-    .out_vec_o    (qkv_out),
+    .act_raddr_o  (qkv_act_raddr),
+    .act_rdata_i  (act_rdata_i),
+    .res_we_o     (qkv_res_we),
+    .res_waddr_o  (qkv_res_waddr),
+    .res_wdata_o  (qkv_res_wdata),
     .done_o       (qkv_done)
   );
 
-  // Proj matvec (fp16 output)
+  // QKV result -> qkv_ram
+  always @(posedge clk_i) begin
+    if (qkv_res_we)
+      qkv_ram[qkv_res_waddr] <= qkv_res_wdata;
+  end
+
+  // Proj matvec: reads from head_ram, writes to shared RAM
   reg          proj_start;
   wire [13:0]  proj_addr;
-  reg  [2047:0] head_out_buf;
-  wire [2047:0] proj_out;
+  wire [6:0]   proj_act_raddr;
+  wire         proj_res_we;
+  wire [6:0]   proj_res_waddr;
+  wire [15:0]  proj_res_wdata;
   wire         proj_done;
 
   matvec_fp16 #(.IN_DIM(128), .OUT_DIM(128)) u_proj (
     .clk_i        (clk_i),
     .rst_i        (rst_i),
     .start_i      (proj_start),
-    .in_vec_i     (head_out_buf),
     .scale_i      (w_scale_i),
     .weight_addr_o(proj_addr),
     .weight_data_i(w_data_i),
-    .out_vec_o    (proj_out),
+    .act_raddr_o  (proj_act_raddr),
+    .act_rdata_i  (head_ram[proj_act_raddr]),
+    .res_we_o     (proj_res_we),
+    .res_waddr_o  (proj_res_waddr),
+    .res_wdata_o  (proj_res_wdata),
     .done_o       (proj_done)
   );
+
+  // Proj result -> shared RAM passthrough
+  always @(*) begin
+    res_we_o    = proj_res_we;
+    res_waddr_o = proj_res_waddr;
+    res_wdata_o = proj_res_wdata;
+  end
 
   // Softmax (Q16.7 input, Q1.15 output)
   reg         sm_start;
@@ -142,8 +173,8 @@ module attention (
     .done_o     (sm_done)
   );
 
-  // QKV buffer: 384 x fp16
-  reg [384*16-1:0] qkv_buf;
+  // QKV act_raddr passthrough to shared RAM
+  assign act_raddr_o = qkv_act_raddr;
 
   // Attention buffer: 256 x 16-bit softmax outputs (Q1.15)
   reg [15:0] attn_buf [0:255];
@@ -174,19 +205,19 @@ module attention (
   reg [8:0] pad_cnt;  // counter for S_SCORE_PAD
 
 
-  // Q_head extraction: 16 fp16 values for current head
+  // Q_head extraction: read from qkv_ram
   wire [15:0] q_head [0:15];
   genvar gi;
   generate
     for (gi = 0; gi < 16; gi = gi + 1) begin : gen_q
-      assign q_head[gi] = qkv_buf[(head_idx * 16 + gi) * 16 +: 16];
+      assign q_head[gi] = qkv_ram[head_idx * 16 + gi];
     end
   endgenerate
 
-  // KV store: extract fp16 K and V for current kv_cnt index
+  // KV store: read K and V from qkv_ram
   wire [6:0] kv_idx = kv_cnt[6:0];
-  wire [15:0] kv_fp16_k = qkv_buf[(9'd128 + {2'b0, kv_idx}) * 16 +: 16];
-  wire [15:0] kv_fp16_v = qkv_buf[(9'd256 + {2'b0, kv_idx}) * 16 +: 16];
+  wire [15:0] kv_fp16_k = qkv_ram[128 + kv_idx];
+  wire [15:0] kv_fp16_v = qkv_ram[256 + kv_idx];
 
   // Score pipeline: fp16 Q*K dot product -> scale -> Q16.7 for softmax
   wire [15:0] sc_mac_prod;
@@ -294,12 +325,10 @@ module attention (
           end
         end
 
-        // QKV matvec: fp16 output
         S_QKV: begin
           if (qkv_done) begin
-            qkv_buf <= qkv_out;
-            state   <= S_KV_STORE;
-            kv_cnt  <= 9'd0;
+            state  <= S_KV_STORE;
+            kv_cnt <= 9'd0;
           end
         end
 
@@ -447,10 +476,9 @@ module attention (
           end
         end
 
-        // Copy 16 fp16 AV accumulators to head_out_buf (1 cycle)
         S_AV_STORE: begin
           for (j = 0; j < 16; j = j + 1) begin
-            head_out_buf[(head_idx * 16 + j) * 16 +: 16] <= av_acc[j];
+            head_ram[head_idx * 16 + j] <= av_acc[j];
           end
           state <= S_NEXT_HEAD;
         end
@@ -470,11 +498,10 @@ module attention (
           end
         end
 
-        // Proj matvec: fp16 output
         S_PROJ: begin
+          // proj writes directly to shared RAM via proj_res_we/waddr/wdata
           if (proj_done) begin
-            out_vec_o <= proj_out;
-            state     <= S_DONE;
+            state <= S_DONE;
           end
         end
 

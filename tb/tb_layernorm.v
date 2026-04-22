@@ -7,14 +7,24 @@ module tb_layernorm;
 
   reg rst = 1'b0;
   reg start = 1'b0;
-  reg [2047:0] x_data;
   reg [5:0] gamma_sel;
 
   wire [5:0]  w_sel;
   wire [6:0]  w_addr;
   wire [7:0]  w_data;
-  wire [2047:0] y_data;
   wire done;
+
+  reg  [15:0] x_reg [0:127];
+  reg  [15:0] y_reg [0:127];
+  wire [6:0]  x_raddr;
+  wire        y_we;
+  wire [6:0]  y_waddr;
+  wire [15:0] y_wdata;
+
+  always @(posedge clk) begin
+    if (y_we)
+      y_reg[y_waddr] <= y_wdata;
+  end
 
   // Test input vectors: 8 tests x 128 fp16 = 1024 entries
   reg [15:0] test_mem [0:1023];
@@ -88,13 +98,16 @@ module tb_layernorm;
     .clk_i      (clk),
     .rst_i      (rst),
     .start_i    (start),
-    .x_i        (x_data),
+    .x_raddr_o  (x_raddr),
+    .x_rdata_i  (x_reg[x_raddr]),
+    .y_we_o     (y_we),
+    .y_waddr_o  (y_waddr),
+    .y_wdata_o  (y_wdata),
     .w_sel_o    (w_sel),
     .w_addr_o   (w_addr),
     .w_data_i   (w_data),
     .gamma_sel_i(gamma_sel),
     .w_scale_i  (w_scale),
-    .y_o        (y_data),
     .done_o     (done),
     .busy_o     ()
   );
@@ -107,7 +120,7 @@ module tb_layernorm;
     begin
       base = test_num * 128;
       for (i = 0; i < 128; i = i + 1)
-        x_data[i*16 +: 16] = test_mem[base + i];
+        x_reg[i] = test_mem[base + i];
     end
   endtask
 
@@ -130,7 +143,7 @@ module tb_layernorm;
       // Log outputs
       for (i = 0; i < 128; i = i + 1) begin
         $fwrite(fd, "T=%0d I=%0d OUT=%04x\n",
-                test_num, i, y_data[i*16 +: 16]);
+                test_num, i, y_reg[i]);
       end
 
       $display("Test %0d done", test_num);
@@ -141,7 +154,9 @@ module tb_layernorm;
   initial begin
     fd = $fopen("/home/user/red_eyes_is_all_you_need/logs/tb_layernorm.log", "w");
 
-    x_data = {2048{1'b0}};
+    for (i = 0; i < 128; i = i + 1) begin
+      x_reg[i] = 16'd0;
+    end
 
     // Reset
     rst = 1'b1;

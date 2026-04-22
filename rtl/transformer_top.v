@@ -70,40 +70,48 @@ module transformer_top (
 
   reg [3:0] state;
 
-  // Registers
-  reg [2047:0] x_reg;        // current hidden state (128 x fp16)
-  reg [7:0]    cur_token;    // token being processed
-  reg [7:0]    pos_r;        // current position (auto-increments)
-  reg [1:0]    layer_idx;    // which transformer layer (0-3)
-  reg          generating;   // mode flag (0=prompt, 1=generate)
+  // Shared activation RAM: 256 entries for head proj logits, 128 for hidden state
+  reg [15:0] act_ram [0:255];
 
-  // Embedding
+  reg [7:0]    cur_token;
+  reg [7:0]    pos_r;
+  reg [1:0]    layer_idx;
+  reg          generating;
+
+  // Embedding: writes to act_ram
   reg         emb_start;
   wire [5:0]  emb_w_sel;
   wire [15:0] emb_w_addr;
-  wire [2047:0] emb_out;
+  wire        emb_res_we;
+  wire [6:0]  emb_res_waddr;
+  wire [15:0] emb_res_wdata;
   wire        emb_done;
 
   embedding u_emb (
-    .clk_i     (clk_i),
-    .rst_i     (rst_i),
-    .start_i   (emb_start),
-    .token_id_i(cur_token),
-    .position_i(pos_r),
-    .w_scale_i (w_scale_i),
-    .w_sel_o   (emb_w_sel),
-    .w_addr_o  (emb_w_addr),
-    .w_data_i  (w_data_i),
-    .embed_o   (emb_out),
-    .done_o    (emb_done),
-    .busy_o    ()
+    .clk_i      (clk_i),
+    .rst_i      (rst_i),
+    .start_i    (emb_start),
+    .token_id_i (cur_token),
+    .position_i (pos_r),
+    .w_scale_i  (w_scale_i),
+    .w_sel_o    (emb_w_sel),
+    .w_addr_o   (emb_w_addr),
+    .w_data_i   (w_data_i),
+    .res_we_o   (emb_res_we),
+    .res_waddr_o(emb_res_waddr),
+    .res_wdata_o(emb_res_wdata),
+    .done_o     (emb_done),
+    .busy_o     ()
   );
 
-  // Transformer layer (reused for all 4 layers)
+  // Transformer layer: reads/writes act_ram[0:127]
   reg          tl_start;
   wire [5:0]   tl_w_sel;
   wire [15:0]  tl_w_addr;
-  wire [2047:0] tl_out;
+  wire [6:0]   tl_act_raddr;
+  wire         tl_res_we;
+  wire [6:0]   tl_res_waddr;
+  wire [15:0]  tl_res_wdata;
   wire         tl_done;
 
   wire         tl_k_we;
@@ -116,28 +124,31 @@ module transformer_top (
   wire [3:0]   tl_kv_dim;
 
   transformer_layer u_tl (
-    .clk_i     (clk_i),
-    .rst_i     (rst_i),
-    .start_i   (tl_start),
-    .layer_i   (layer_idx),
-    .pos_i     (pos_r),
-    .x_i       (x_reg),
-    .w_sel_o   (tl_w_sel),
-    .w_addr_o  (tl_w_addr),
-    .w_data_i  (w_data_i),
-    .w_scale_i (w_scale_i),
-    .k_we_o    (tl_k_we),
-    .k_wdata_o (tl_k_wdata),
-    .k_rdata_i (k_rdata_i),
-    .v_we_o    (tl_v_we),
-    .v_wdata_o (tl_v_wdata),
-    .v_rdata_i (v_rdata_i),
-    .kv_layer_o(tl_kv_layer),
-    .kv_head_o (tl_kv_head),
-    .kv_pos_o  (tl_kv_pos),
-    .kv_dim_o  (tl_kv_dim),
-    .out_vec_o (tl_out),
-    .done_o    (tl_done)
+    .clk_i       (clk_i),
+    .rst_i       (rst_i),
+    .start_i     (tl_start),
+    .layer_i     (layer_idx),
+    .pos_i       (pos_r),
+    .act_raddr_o (tl_act_raddr),
+    .act_rdata_i (act_ram[tl_act_raddr]),
+    .res_we_o    (tl_res_we),
+    .res_waddr_o (tl_res_waddr),
+    .res_wdata_o (tl_res_wdata),
+    .w_sel_o     (tl_w_sel),
+    .w_addr_o    (tl_w_addr),
+    .w_data_i    (w_data_i),
+    .w_scale_i   (w_scale_i),
+    .k_we_o      (tl_k_we),
+    .k_wdata_o   (tl_k_wdata),
+    .k_rdata_i   (k_rdata_i),
+    .v_we_o      (tl_v_we),
+    .v_wdata_o   (tl_v_wdata),
+    .v_rdata_i   (v_rdata_i),
+    .kv_layer_o  (tl_kv_layer),
+    .kv_head_o   (tl_kv_head),
+    .kv_pos_o    (tl_kv_pos),
+    .kv_dim_o    (tl_kv_dim),
+    .done_o      (tl_done)
   );
 
   // KV cache: pass-through from transformer_layer when active, else 0
@@ -151,58 +162,84 @@ module transformer_top (
   assign kv_pos_o   = kv_active ? tl_kv_pos   : 8'd0;
   assign kv_dim_o   = kv_active ? tl_kv_dim   : 4'd0;
 
-  // Final LayerNorm (ln_f, gamma_sel=34, flat bus fp16)
+  // Final LayerNorm: reads/writes act_ram[0:127]
   reg         lnf_start;
   wire [5:0]  lnf_w_sel;
   wire [6:0]  lnf_w_addr;
+  wire [6:0]  lnf_x_raddr;
+  wire        lnf_y_we;
+  wire [6:0]  lnf_y_waddr;
+  wire [15:0] lnf_y_wdata;
   wire        lnf_done;
-  wire [2047:0] lnf_y;
 
   layernorm u_ln_f (
     .clk_i       (clk_i),
     .rst_i       (rst_i),
     .start_i     (lnf_start),
-    .x_i         (x_reg),
+    .x_raddr_o   (lnf_x_raddr),
+    .x_rdata_i   (act_ram[lnf_x_raddr]),
+    .y_we_o      (lnf_y_we),
+    .y_waddr_o   (lnf_y_waddr),
+    .y_wdata_o   (lnf_y_wdata),
     .w_sel_o     (lnf_w_sel),
     .w_addr_o    (lnf_w_addr),
     .w_data_i    (w_data_i),
     .gamma_sel_i (6'd34),
     .w_scale_i   (w_scale_i),
-    .y_o         (lnf_y),
     .done_o      (lnf_done),
     .busy_o      ()
   );
 
-  // Head projection: matvec_fp16 128->256 (weight-tied with tok_emb)
+  // Head projection: reads act_ram[0:127], writes act_ram[0:255]
   reg          head_start;
   wire [14:0]  head_addr;
-  wire [256*16-1:0] head_out;
+  wire [6:0]   head_act_raddr;
+  wire         head_res_we;
+  wire [7:0]   head_res_waddr;
+  wire [15:0]  head_res_wdata;
   wire         head_done;
 
   matvec_fp16 #(.IN_DIM(128), .OUT_DIM(256)) u_head_proj (
     .clk_i        (clk_i),
     .rst_i        (rst_i),
     .start_i      (head_start),
-    .in_vec_i     (x_reg),
     .scale_i      (w_scale_i),
     .weight_addr_o(head_addr),
     .weight_data_i(w_data_i),
-    .out_vec_o    (head_out),
+    .act_raddr_o  (head_act_raddr),
+    .act_rdata_i  (act_ram[head_act_raddr]),
+    .res_we_o     (head_res_we),
+    .res_waddr_o  (head_res_waddr),
+    .res_wdata_o  (head_res_wdata),
     .done_o       (head_done)
   );
 
-  // Sampler (fp16 argmax)
+  // act_ram write mux: only one writer active at a time
+  always @(posedge clk_i) begin
+    if (emb_res_we)
+      act_ram[emb_res_waddr] <= emb_res_wdata;
+    else if (tl_res_we)
+      act_ram[tl_res_waddr] <= tl_res_wdata;
+    else if (lnf_y_we)
+      act_ram[lnf_y_waddr] <= lnf_y_wdata;
+    else if (head_res_we)
+      act_ram[head_res_waddr] <= head_res_wdata;
+  end
+
+  // Sampler: reads act_ram[0:255]
   reg          samp_start;
+  wire [7:0]   samp_logit_raddr;
   wire [7:0]   samp_token;
   wire         samp_done;
 
   sampler u_samp (
-    .clk_i   (clk_i),
-    .rst_i   (rst_i),
-    .start_i (samp_start),
-    .logits_i(head_out),
-    .token_o (samp_token),
-    .done_o  (samp_done)
+    .clk_i        (clk_i),
+    .rst_i        (rst_i),
+    .start_i      (samp_start),
+    .logit_raddr_o(samp_logit_raddr),
+    .logit_rdata_i(act_ram[samp_logit_raddr]),
+    .token_o      (samp_token),
+    .done_o       (samp_done)
   );
 
   // Weight store mux (combinational)
@@ -278,7 +315,6 @@ module transformer_top (
         // Wait for embedding to complete
         S_EMBED: begin
           if (emb_done) begin
-            x_reg     <= emb_out;
             layer_idx <= 2'd0;
             tl_start  <= 1'b1;
             state     <= S_LAYER_WAIT;
@@ -294,7 +330,6 @@ module transformer_top (
         // Wait for transformer_layer to complete
         S_LAYER_WAIT: begin
           if (tl_done) begin
-            x_reg     <= tl_out;
             layer_idx <= layer_idx + 2'd1;
             if (layer_idx == 2'd3) begin
               // All 4 layers done
@@ -323,7 +358,6 @@ module transformer_top (
         // Wait for ln_f, capture output, start head projection
         S_LN_F_WAIT: begin
           if (lnf_done) begin
-            x_reg      <= lnf_y;
             head_start <= 1'b1;
             state      <= S_HEAD_PROJ;
           end

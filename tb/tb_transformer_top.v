@@ -96,8 +96,6 @@ module tb_transformer_top;
   integer fd, i;
   integer token_count;
 
-  // Access head_out logits from inside DUT (256 x fp16)
-  wire [256*16-1:0] logits = dut.head_out;
 
   initial begin
     fd = $fopen("/home/user/red_eyes_is_all_you_need/logs/tb_transformer_top.log", "w");
@@ -128,9 +126,9 @@ module tb_transformer_top;
     // Wait for first token_valid
     while (!token_valid) @(posedge clk);
 
-    // Log logits (fp16, 4-hex digits)
+    // Log logits
     for (i = 0; i < 256; i = i + 1) begin
-      $fwrite(fd, "LOGITS[%0d]=%04x\n", i, logits[i*16 +: 16]);
+      $fwrite(fd, "LOGITS[%0d]=%04x\n", i, dut.act_ram[i]);
     end
     $fwrite(fd, "OUT_TOKEN=%02x\n", out_token);
     $display("  Test 0: output token=%0d (0x%02x)", out_token, out_token);
@@ -172,7 +170,7 @@ module tb_transformer_top;
     // Wait for first token_valid
     while (!token_valid) @(posedge clk);
     for (i = 0; i < 256; i = i + 1) begin
-      $fwrite(fd, "LOGITS[%0d]=%04x\n", i, logits[i*16 +: 16]);
+      $fwrite(fd, "LOGITS[%0d]=%04x\n", i, dut.act_ram[i]);
     end
     $fwrite(fd, "OUT_TOKEN=%02x\n", out_token);
     $display("  Test 1: output token=%0d (0x%02x)", out_token, out_token);
@@ -205,7 +203,7 @@ module tb_transformer_top;
         // Log logits only for first generated token
         if (token_count == 1) begin
           for (i = 0; i < 256; i = i + 1) begin
-            $fwrite(fd, "LOGITS[%0d]=%04x\n", i, logits[i*16 +: 16]);
+            $fwrite(fd, "LOGITS[%0d]=%04x\n", i, dut.act_ram[i]);
           end
         end
       end
