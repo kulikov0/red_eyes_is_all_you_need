@@ -39,7 +39,7 @@ module top (
   MMCME2_BASE #(
     .CLKIN1_PERIOD (5.0),
     .CLKFBOUT_MULT_F (5.0),
-    .CLKOUT0_DIVIDE_F(10.0)
+    .CLKOUT0_DIVIDE_F(100.0)
   ) mmcm_inst (
     .CLKIN1  (clk_200),
     .RST     (1'b0),
@@ -67,7 +67,7 @@ module top (
   wire [7:0] rx_data;
   wire       rx_valid;
 
-  uart_rx #(.CLK_FREQ(100_000_000), .BAUD(115_200)) u_rx (
+  uart_rx #(.CLK_FREQ(10_000_000), .BAUD(115_200)) u_rx (
     .clk_i  (clk),
     .rst_i  (rst),
     .rx_i   (uart_rx_i),
@@ -80,7 +80,7 @@ module top (
   reg        tx_start;
   wire       tx_busy;
 
-  uart_tx #(.CLK_FREQ(100_000_000), .BAUD(115_200)) u_tx (
+  uart_tx #(.CLK_FREQ(10_000_000), .BAUD(115_200)) u_tx (
     .clk_i  (clk),
     .rst_i  (rst),
     .data_i (tx_data),
@@ -279,7 +279,7 @@ module top (
       tx_blink      <= 0;
     end else begin
       // Heartbeat ~0.67s at 100 MHz
-      if (heartbeat_cnt == 26'd33_333_333) begin
+      if (heartbeat_cnt == 23'd3_333_333) begin
         heartbeat_cnt <= 0;
         heartbeat_r   <= ~heartbeat_r;
       end else begin
