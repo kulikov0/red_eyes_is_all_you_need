@@ -67,17 +67,18 @@ module attention (
   localparam [15:0] INV_SQRT_DK = 16'h3400;
 
   // FSM states
-  localparam [3:0] S_IDLE      = 4'd0,
-                   S_QKV       = 4'd1,
-                   S_KV_STORE  = 4'd2,
-                   S_SCORE     = 4'd3,
-                   S_SCORE_PAD = 4'd4,
-                   S_SM_WAIT   = 4'd5,
-                   S_AV        = 4'd6,
-                   S_AV_STORE  = 4'd7,
-                   S_NEXT_HEAD = 4'd8,
-                   S_PROJ      = 4'd9,
-                   S_DONE      = 4'd10;
+  localparam [3:0] S_IDLE        = 4'd0,
+                   S_QKV         = 4'd1,
+                   S_KV_STORE    = 4'd2,
+                   S_SCORE       = 4'd3,
+                   S_SCORE_SCALE = 4'd4,
+                   S_SCORE_PAD   = 4'd5,
+                   S_SM_WAIT     = 4'd6,
+                   S_AV          = 4'd7,
+                   S_AV_STORE    = 4'd8,
+                   S_NEXT_HEAD   = 4'd9,
+                   S_PROJ        = 4'd10,
+                   S_DONE        = 4'd11;
 
   reg [3:0] state;
 
@@ -219,7 +220,7 @@ module attention (
   wire [15:0] kv_fp16_k = qkv_ram[128 + kv_idx];
   wire [15:0] kv_fp16_v = qkv_ram[256 + kv_idx];
 
-  // Score pipeline: fp16 Q*K dot product -> scale -> Q16.7 for softmax
+  // Score: fp16 Q*K dot product
   wire [15:0] sc_mac_prod;
   fp16_mul_comb u_sc_mul (
     .a_i(q_head[sc_dim_d2]),
@@ -234,15 +235,17 @@ module attention (
     .sum_o(sc_mac_sum)
   );
 
-  // Scale the final dot product by 1/sqrt(d_k)
+  // Registered dot product, scaled by 1/sqrt(d_k) and converted to Q16.7
+  reg [15:0] sc_dot_r;
+
   wire [15:0] sc_scaled;
   fp16_mul_comb u_sc_scale (
-    .a_i(sc_mac_sum),
+    .a_i(sc_dot_r),
     .b_i(INV_SQRT_DK),
     .prod_o(sc_scaled)
   );
 
-  // Convert fp16 score to Q16.7 for softmax (24-bit, no overflow)
+  // Convert fp16 score to Q16.7 for softmax
   wire [23:0] sc_q167;
   fp16_to_q167 u_sc_cvt (
     .val_i(sc_scaled),
@@ -385,29 +388,33 @@ module attention (
           // MAC when data is valid (2 cycles after addr issue)
           if (sc_valid[1]) begin
             if (sc_dim_d2 == 4'd15) begin
-              // Last dim: sc_mac_sum has final dot product
-              // sc_scaled = sc_mac_sum * INV_SQRT_DK (combinational)
-              // sc_q167 = fp16_to_q167(sc_scaled) (combinational)
-              sm_in_valid <= 1'b1;
-              sm_in_data  <= sc_q167;
-              score_acc   <= 16'd0;
-
-              if (sc_pos == pos_r) begin
-                if (pos_r == 8'd255) begin
-                  state      <= S_SM_WAIT;
-                  sm_out_cnt <= 9'd0;
-                end else begin
-                  state   <= S_SCORE_PAD;
-                  pad_cnt <= {1'b0, pos_r} + 9'd1;
-                end
-              end else begin
-                sc_pos  <= sc_pos + 8'd1;
-                sc_cnt  <= 5'd0;
-                sc_valid <= 2'b00;
-              end
+              sc_dot_r  <= sc_mac_sum;
+              score_acc <= 16'd0;
+              state     <= S_SCORE_SCALE;
             end else begin
               score_acc <= sc_mac_sum;
             end
+          end
+        end
+
+        // Scale registered dot product and feed to softmax
+        S_SCORE_SCALE: begin
+          sm_in_valid <= 1'b1;
+          sm_in_data  <= sc_q167;
+
+          if (sc_pos == pos_r) begin
+            if (pos_r == 8'd255) begin
+              state      <= S_SM_WAIT;
+              sm_out_cnt <= 9'd0;
+            end else begin
+              state   <= S_SCORE_PAD;
+              pad_cnt <= {1'b0, pos_r} + 9'd1;
+            end
+          end else begin
+            sc_pos   <= sc_pos + 8'd1;
+            sc_cnt   <= 5'd0;
+            sc_valid <= 2'b00;
+            state    <= S_SCORE;
           end
         end
 

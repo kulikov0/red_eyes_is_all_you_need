@@ -1,9 +1,11 @@
 // Matrix-vector multiply: int8 weights x fp16 input -> fp16 output
 //
-// Snapshots input from shared RAM into internal distributed RAM, then computes.
-// Writes result to shared RAM. Safe when input/output share the same RAM.
+// Snapshots input from shared RAM into internal distributed RAM, then computes
+// Writes result to shared RAM. Safe when input/output share the same RAM
 //
-// Latency: IN_DIM + OUT_DIM * IN_DIM + 2 cycles
+// Dequant pipelined: BRAM+int8+mul_scale | mul_input+acc, 2 stages
+//
+// Latency: IN_DIM + OUT_DIM * (IN_DIM + 1) + 3 cycles
 
 module matvec_fp16 #(
   parameter IN_DIM  = 128,
@@ -49,13 +51,17 @@ module matvec_fp16 #(
     .prod_o(w_dequant)
   );
 
-  // MAC: dequant_w * in_snap[col] + acc
-  reg [COL_W-1:0] col;
+  // Pipeline register between dequant and MAC
+  reg [15:0]      dq_r;
+  reg [COL_W-1:0] dq_col;
+  reg             dq_valid;
+  reg             dq_last;
 
+  // MAC from registered dequant: dq_r * in_snap[dq_col] + acc
   wire [15:0] mac_prod;
   fp16_mul_comb u_mac_mul (
-    .a_i(w_dequant),
-    .b_i(in_snap[col]),
+    .a_i(dq_r),
+    .b_i(in_snap[dq_col]),
     .prod_o(mac_prod)
   );
 
@@ -67,10 +73,13 @@ module matvec_fp16 #(
     .sum_o(acc_sum)
   );
 
-  reg [ROW_W-1:0] row;
+  reg [COL_W-1:0] col;
+  reg [ROW_W-1:0] row;      // output row counter, incremented on dq_last
+  reg [ROW_W-1:0] feed_row; // input row counter, leads row by 1 pipeline cycle
   reg loading;
   reg prefetch;
   reg running;
+  reg draining;
 
   always @(posedge clk_i) begin
     if (rst_i) begin
@@ -80,19 +89,24 @@ module matvec_fp16 #(
       loading       <= 1'b0;
       prefetch      <= 1'b0;
       running       <= 1'b0;
+      draining      <= 1'b0;
       done_o        <= 1'b0;
       res_we_o      <= 1'b0;
       act_raddr_o   <= {$clog2(IN_DIM){1'b0}};
       weight_addr_o <= {ADDR_W{1'b0}};
+      dq_valid      <= 1'b0;
+      dq_last       <= 1'b0;
 
     end else if (start_i) begin
       loading       <= 1'b1;
       prefetch      <= 1'b0;
       running       <= 1'b0;
+      draining      <= 1'b0;
       act_raddr_o   <= {$clog2(IN_DIM){1'b0}};
       col           <= {COL_W{1'b0}};
       done_o        <= 1'b0;
       res_we_o      <= 1'b0;
+      dq_valid      <= 1'b0;
 
     end else if (loading) begin
       in_snap[act_raddr_o] <= act_rdata_i;
@@ -101,6 +115,7 @@ module matvec_fp16 #(
         prefetch      <= 1'b1;
         col           <= {COL_W{1'b0}};
         row           <= {ROW_W{1'b0}};
+        feed_row      <= {ROW_W{1'b0}};
         acc           <= 16'd0;
         weight_addr_o <= {ADDR_W{1'b0}};
       end else begin
@@ -108,32 +123,59 @@ module matvec_fp16 #(
       end
 
     end else if (prefetch) begin
+      // First BRAM read latency cycle
       prefetch      <= 1'b0;
       running       <= 1'b1;
       weight_addr_o <= weight_addr_o + 1;
+      dq_valid      <= 1'b0;
 
-    end else if (running) begin
+    end else if (running || draining) begin
       res_we_o <= 1'b0;
 
-      if (col == IN_DIM[COL_W-1:0] - 1) begin
-        res_we_o    <= 1'b1;
-        res_waddr_o <= row[$clog2(OUT_DIM)-1:0];
-        res_wdata_o <= acc_sum;
-
-        col <= {COL_W{1'b0}};
-        acc <= 16'd0;
-        weight_addr_o <= weight_addr_o + 1;
-        row <= row + 1;
-
-        if (row == OUT_DIM[ROW_W-1:0] - 1) begin
-          running <= 1'b0;
-          done_o  <= 1'b1;
-        end
-
+      // Register dequant result and col index
+      if (running) begin
+        dq_r     <= w_dequant;
+        dq_col   <= col;
+        dq_valid <= 1'b1;
+        dq_last  <= (col == IN_DIM[COL_W-1:0] - 1);
       end else begin
-        acc           <= acc_sum;
-        col           <= col + 1;
-        weight_addr_o <= weight_addr_o + 1;
+        dq_valid <= 1'b0;
+      end
+
+      // MAC accumulate from pipeline register
+      if (dq_valid) begin
+        if (dq_last) begin
+          res_we_o    <= 1'b1;
+          res_waddr_o <= row[$clog2(OUT_DIM)-1:0];
+          res_wdata_o <= acc_sum;
+          acc         <= 16'd0;
+          row         <= row + 1;
+        end else begin
+          acc <= acc_sum;
+        end
+      end
+
+      // Advance weight address and column
+      if (running) begin
+        if (col == IN_DIM[COL_W-1:0] - 1) begin
+          col <= {COL_W{1'b0}};
+          if (feed_row == OUT_DIM[ROW_W-1:0] - 1) begin
+            running  <= 1'b0;
+            draining <= 1'b1;
+          end else begin
+            feed_row      <= feed_row + 1;
+            weight_addr_o <= weight_addr_o + 1;
+          end
+        end else begin
+          col           <= col + 1;
+          weight_addr_o <= weight_addr_o + 1;
+        end
+      end
+
+      // Drain: last dq_valid consumed, emit done
+      if (draining && !dq_valid) begin
+        draining <= 1'b0;
+        done_o   <= 1'b1;
       end
 
     end else begin
