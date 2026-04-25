@@ -1,15 +1,17 @@
-// FP16 adder, 1-cycle registered output
+// FP16 adder, 3-cycle pipelined
 //
 // IEEE 754 half-precision: sign(1) | exp(5) | mant(10)
 // Flush-to-zero for denormals (exp==0 treated as zero)
 // inf + inf(same sign) = inf, inf + inf(diff sign) = NaN
 // Any NaN input -> NaN output
-// Latency: 1 clock cycle
+// Latency: 3 clock cycles from valid_i to valid_o
 
 module fp16_add (
   input  wire        clk_i,
+  input  wire        valid_i,
   input  wire [15:0] a_i,
   input  wire [15:0] b_i,
+  output reg         valid_o,
   output reg  [15:0] sum_o
 );
 
@@ -49,21 +51,56 @@ module fp16_add (
   wire [4:0] exp_diff = lg_exp - sm_exp;
 
   // lg: 14 bits = {0, mant[10:0], guard=0, round=0}
-  wire [13:0] lg_ext = {1'b0, lg_mant, 2'b00};
+  wire [13:0] lg_ext_c = {1'b0, lg_mant, 2'b00};
 
   // sm: start with same 14-bit format, extend with 13 trailing zeros for shift
   // Total 27 bits. After right-shift, top 14 = aligned value, bottom 13 = sticky source
   wire [26:0] sm_wide = {1'b0, sm_mant, 2'b00, 13'b0};
   wire [26:0] sm_shifted = sm_wide >> exp_diff;
-  wire [13:0] sm_ext = sm_shifted[26:13];
-  wire        sticky  = |sm_shifted[12:0];
+  wire [13:0] sm_ext_c = sm_shifted[26:13];
+  wire        sticky_c = |sm_shifted[12:0];
+
+  wire eff_sub_c = lg_sign ^ sm_sign;
+
+  // Pre-compute special-case result so stage 3 just muxes between it and normal result
+  wire        use_special_c = a_is_nan | b_is_nan | a_is_inf | b_is_inf | a_is_zero | b_is_zero;
+  wire [15:0] special_result_c =
+    (a_is_nan | b_is_nan)               ? 16'h7E00 :
+    (a_is_inf && b_is_inf && eff_sub_c) ? 16'h7E00 :
+    (a_is_inf)                          ? {a_sign, 5'd31, 10'd0} :
+    (b_is_inf)                          ? {b_sign, 5'd31, 10'd0} :
+    (a_is_zero && b_is_zero)            ? {a_sign & b_sign, 15'd0} :
+    (a_is_zero)                         ? b_i :
+                                          a_i;
+
+  // Stage 1 registers: aligned operands, sticky, sign/exp of larger, special bypass
+  reg [13:0] s1_lg_ext;
+  reg [13:0] s1_sm_ext;
+  reg        s1_sticky;
+  reg        s1_eff_sub;
+  reg        s1_lg_sign;
+  reg [4:0]  s1_lg_exp;
+  reg        s1_use_special;
+  reg [15:0] s1_special_result;
+  reg        s1_valid;
+
+  always @(posedge clk_i) begin
+    s1_lg_ext         <= lg_ext_c;
+    s1_sm_ext         <= sm_ext_c;
+    s1_sticky         <= sticky_c;
+    s1_eff_sub        <= eff_sub_c;
+    s1_lg_sign        <= lg_sign;
+    s1_lg_exp         <= lg_exp;
+    s1_use_special    <= use_special_c;
+    s1_special_result <= special_result_c;
+    s1_valid          <= valid_i;
+  end
 
   // Add or subtract based on effective operation
-  wire eff_sub = lg_sign ^ sm_sign;
-  wire [14:0] mant_sum = eff_sub ? ({1'b0, lg_ext} - {1'b0, sm_ext}) :
-                                   ({1'b0, lg_ext} + {1'b0, sm_ext});
   // For subtraction, result is always positive since |lg| >= |sm|
   // Bit 14 is overflow bit (addition only)
+  wire [14:0] mant_sum_c = s1_eff_sub ? ({1'b0, s1_lg_ext} - {1'b0, s1_sm_ext}) :
+                                        ({1'b0, s1_lg_ext} + {1'b0, s1_sm_ext});
 
   // Normalization: find leading one position in mant_sum[14:0]
   // Expected bit positions after add:
@@ -71,35 +108,60 @@ module fp16_add (
   //   bit 13: overflow (addition): 1x.mmmmmmmmmm G R
   //   bit 12: normal:              01.mmmmmmmmmm G R
   //   bits < 12: cancellation (subtraction)
-  reg [3:0] lod;
-  reg       sum_is_zero;
+  reg [3:0] lod_c;
+  reg       sum_is_zero_c;
   integer i;
   always @(*) begin
-    lod = 4'd0;
-    sum_is_zero = (mant_sum[14:0] == 15'd0);
+    lod_c = 4'd0;
+    sum_is_zero_c = (mant_sum_c[14:0] == 15'd0);
     for (i = 0; i < 15; i = i + 1) begin
-      if (mant_sum[i]) lod = i[3:0];
+      if (mant_sum_c[i]) lod_c = i[3:0];
     end
   end
 
+  // Stage 2 registers: sum, LOD, zero flag, carried metadata
+  reg [14:0] s2_mant_sum;
+  reg [3:0]  s2_lod;
+  reg        s2_sum_is_zero;
+  reg        s2_eff_sub;
+  reg        s2_sticky;
+  reg        s2_lg_sign;
+  reg [4:0]  s2_lg_exp;
+  reg        s2_use_special;
+  reg [15:0] s2_special_result;
+  reg        s2_valid;
+
+  always @(posedge clk_i) begin
+    s2_mant_sum       <= mant_sum_c;
+    s2_lod            <= lod_c;
+    s2_sum_is_zero    <= sum_is_zero_c;
+    s2_eff_sub        <= s1_eff_sub;
+    s2_sticky         <= s1_sticky;
+    s2_lg_sign        <= s1_lg_sign;
+    s2_lg_exp         <= s1_lg_exp;
+    s2_use_special    <= s1_use_special;
+    s2_special_result <= s1_special_result;
+    s2_valid          <= s1_valid;
+  end
+
   // Target: leading 1 at bit 12 -> {XX, 1, mant[9:0], G, R}
-  wire overflow = (lod == 4'd13) || (lod == 4'd14);
+  wire overflow = (s2_lod == 4'd13) || (s2_lod == 4'd14);
 
   // Shift to normalize: if lod > 12, shift right (lod-12); if lod < 12, shift left (12-lod)
-  wire [3:0] rshift_amt = (lod > 4'd12) ? (lod - 4'd12) : 4'd0;
-  wire [3:0] lshift_amt = (lod < 4'd12) ? (4'd12 - lod) : 4'd0;
+  wire [3:0] rshift_amt = (s2_lod > 4'd12) ? (s2_lod - 4'd12) : 4'd0;
+  wire [3:0] lshift_amt = (s2_lod < 4'd12) ? (4'd12 - s2_lod) : 4'd0;
 
-  wire [14:0] norm_mant = sum_is_zero ? 15'd0 :
-                          overflow    ? (mant_sum >> rshift_amt) :
-                                        (mant_sum << lshift_amt);
+  wire [14:0] norm_mant = s2_sum_is_zero ? 15'd0 :
+                          overflow       ? (s2_mant_sum >> rshift_amt) :
+                                           (s2_mant_sum << lshift_amt);
 
   // Exponent adjustment
-  wire signed [6:0] lg_exp_s = $signed({2'b0, lg_exp});
+  wire signed [6:0] lg_exp_s = $signed({2'b0, s2_lg_exp});
   wire signed [6:0] rsh_s    = $signed({3'b0, rshift_amt});
   wire signed [6:0] lsh_s    = $signed({3'b0, lshift_amt});
-  wire signed [6:0] exp_adj_s = sum_is_zero ? 7'sd0 :
-                                overflow    ? (lg_exp_s + rsh_s) :
-                                              (lg_exp_s - lsh_s);
+  wire signed [6:0] exp_adj_s = s2_sum_is_zero ? 7'sd0 :
+                                overflow       ? (lg_exp_s + rsh_s) :
+                                                 (lg_exp_s - lsh_s);
 
   // RNE rounding: extract guard and round from normalized mantissa
   // norm_mant[12] = implicit 1, [11:2] = mantissa
@@ -108,10 +170,10 @@ module fp16_add (
   wire       guard_bit  = norm_mant[1];
   wire       round_bit  = norm_mant[0];
   // For right-shifts during normalization (overflow), bits shifted out contribute to sticky
-  wire       extra_sticky = overflow ? |mant_sum[0] : 1'b0;
-  wire       sticky_bit   = sticky | extra_sticky;
+  wire       extra_sticky = overflow ? |s2_mant_sum[0] : 1'b0;
+  wire       sticky_bit   = s2_sticky | extra_sticky;
   // Disable sticky for effective subtraction (sticky is from alignment, unreliable after borrow)
-  wire       use_sticky = sticky_bit & ~eff_sub;
+  wire       use_sticky = sticky_bit & ~s2_eff_sub;
   wire       round_up = guard_bit & (round_bit | use_sticky | trunc_mant[0]);
 
   wire [10:0] rounded_mant = {1'b0, trunc_mant} + {10'd0, round_up};
@@ -119,45 +181,28 @@ module fp16_add (
   wire signed [6:0] final_exp_s = round_ovf ? (exp_adj_s + 7'sd1) : exp_adj_s;
 
   // Pack result
-  wire [15:0] normal_result = {lg_sign, final_exp_s[4:0], rounded_mant[9:0]};
+  wire [15:0] normal_result = {s2_lg_sign, final_exp_s[4:0], rounded_mant[9:0]};
 
   // Overflow to infinity
   wire exp_overflow = (final_exp_s >= 7'sd31);
-  wire [15:0] inf_result = {lg_sign, 5'd31, 10'd0};
+  wire [15:0] inf_result = {s2_lg_sign, 5'd31, 10'd0};
 
   // Underflow to zero (exponent <= 0)
-  wire exp_underflow = (final_exp_s <= 7'sd0) && !sum_is_zero;
-  wire [15:0] zero_result = {lg_sign, 15'd0};
-
-  wire [15:0] nan_result = 16'h7E00;
+  wire exp_underflow = (final_exp_s <= 7'sd0) && !s2_sum_is_zero;
+  wire [15:0] zero_result = {s2_lg_sign, 15'd0};
 
   reg [15:0] result;
   always @(*) begin
-    if (a_is_nan || b_is_nan) begin
-      result = nan_result;
-    end else if (a_is_inf && b_is_inf && eff_sub) begin
-      result = nan_result;
-    end else if (a_is_inf || b_is_inf) begin
-      result = a_is_inf ? {a_sign, 5'd31, 10'd0} : {b_sign, 5'd31, 10'd0};
-    end else if (a_is_zero && b_is_zero) begin
-      result = {a_sign & b_sign, 15'd0};
-    end else if (a_is_zero) begin
-      result = b_i;
-    end else if (b_is_zero) begin
-      result = a_i;
-    end else if (sum_is_zero) begin
-      result = 16'd0;
-    end else if (exp_underflow) begin
-      result = zero_result;
-    end else if (exp_overflow) begin
-      result = inf_result;
-    end else begin
-      result = normal_result;
-    end
+    if (s2_use_special)       result = s2_special_result;
+    else if (s2_sum_is_zero)  result = 16'd0;
+    else if (exp_underflow)   result = zero_result;
+    else if (exp_overflow)    result = inf_result;
+    else                      result = normal_result;
   end
 
   always @(posedge clk_i) begin
-    sum_o <= result;
+    sum_o   <= result;
+    valid_o <= s2_valid;
   end
 
 endmodule

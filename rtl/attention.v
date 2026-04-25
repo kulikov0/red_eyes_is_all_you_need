@@ -190,16 +190,18 @@ module attention (
   reg [4:0]  sc_cnt;
   reg [7:0]  sc_pos;
   reg [15:0] score_acc;  // fp16 accumulator
-  reg [1:0]  sc_valid;
+  reg [2:0]  sc_valid;
   reg [3:0]  sc_dim_d1;
   reg [3:0]  sc_dim_d2;
+  reg [3:0]  sc_dim_d3;
 
   // AV computation pipeline
   reg [4:0]  av_cnt;
   reg [7:0]  av_pos;
-  reg [1:0]  av_valid;
+  reg [2:0]  av_valid;
   reg [3:0]  av_dim_d1;
   reg [3:0]  av_dim_d2;
+  reg [3:0]  av_dim_d3;
 
   // Softmax output capture counter
   reg [8:0] sm_out_cnt;
@@ -228,10 +230,13 @@ module attention (
     .prod_o(sc_mac_prod)
   );
 
+  // Pipeline register between mul and accumulator add
+  reg [15:0] sc_prod_r;
+
   wire [15:0] sc_mac_sum;
   fp16_add_comb u_sc_add (
     .a_i(score_acc),
-    .b_i(sc_mac_prod),
+    .b_i(sc_prod_r),
     .sum_o(sc_mac_sum)
   );
 
@@ -266,10 +271,13 @@ module attention (
     .prod_o(av_mac_prod)
   );
 
+  // Pipeline register between mul and accumulator add
+  reg [15:0] av_prod_r;
+
   wire [15:0] av_mac_sum;
   fp16_add_comb u_av_add (
-    .a_i(av_acc[av_dim_d2]),
-    .b_i(av_mac_prod),
+    .a_i(av_acc[av_dim_d3]),
+    .b_i(av_prod_r),
     .sum_o(av_mac_sum)
   );
 
@@ -358,13 +366,14 @@ module attention (
             sc_pos   <= 8'd0;
             sc_cnt   <= 5'd0;
             score_acc <= 16'd0;
-            sc_valid <= 2'b00;
+            sc_valid <= 3'b000;
           end
           kv_cnt <= kv_cnt + 9'd1;
         end
 
         // Score: fp16 Q . K[p] for p = 0..pos
-        // Pipeline: issue addr at sc_cnt=0..15, data valid at sc_cnt=2..17
+        // Issue addr at sc_cnt=0..15, data valid at sc_cnt=2..17,
+        // mul product registered at sc_valid[1], add at sc_valid[2]
         S_SCORE: begin
           kv_layer_o <= layer_r;
           kv_head_o  <= head_idx;
@@ -373,9 +382,10 @@ module attention (
           // Dim delay line
           sc_dim_d1 <= sc_cnt[3:0];
           sc_dim_d2 <= sc_dim_d1;
+          sc_dim_d3 <= sc_dim_d2;
 
           // Valid pipeline
-          sc_valid <= {sc_valid[0], (sc_cnt < 5'd16) ? 1'b1 : 1'b0};
+          sc_valid <= {sc_valid[1:0], (sc_cnt < 5'd16) ? 1'b1 : 1'b0};
 
           // Issue K cache read address for dims 0..15
           if (sc_cnt < 5'd16) begin
@@ -385,9 +395,14 @@ module attention (
 
           sc_cnt <= sc_cnt + 5'd1;
 
-          // MAC when data is valid (2 cycles after addr issue)
+          // Register mul product
           if (sc_valid[1]) begin
-            if (sc_dim_d2 == 4'd15) begin
+            sc_prod_r <= sc_mac_prod;
+          end
+
+          // Accumulate from registered product
+          if (sc_valid[2]) begin
+            if (sc_dim_d3 == 4'd15) begin
               sc_dot_r  <= sc_mac_sum;
               score_acc <= 16'd0;
               state     <= S_SCORE_SCALE;
@@ -413,7 +428,7 @@ module attention (
           end else begin
             sc_pos   <= sc_pos + 8'd1;
             sc_cnt   <= 5'd0;
-            sc_valid <= 2'b00;
+            sc_valid <= 3'b000;
             state    <= S_SCORE;
           end
         end
@@ -439,7 +454,7 @@ module attention (
             state   <= S_AV;
             av_pos  <= 8'd0;
             av_cnt  <= 5'd0;
-            av_valid <= 2'b00;
+            av_valid <= 3'b000;
             for (j = 0; j < 16; j = j + 1) begin
               av_acc[j] <= 16'd0;
             end
@@ -455,9 +470,10 @@ module attention (
           // Dim delay line
           av_dim_d1 <= av_cnt[3:0];
           av_dim_d2 <= av_dim_d1;
+          av_dim_d3 <= av_dim_d2;
 
           // Valid pipeline
-          av_valid <= {av_valid[0], (av_cnt < 5'd16) ? 1'b1 : 1'b0};
+          av_valid <= {av_valid[1:0], (av_cnt < 5'd16) ? 1'b1 : 1'b0};
 
           // Issue V cache read address for dims 0..15
           if (av_cnt < 5'd16) begin
@@ -467,17 +483,22 @@ module attention (
 
           av_cnt <= av_cnt + 5'd1;
 
-          // MAC when data valid
+          // Register mul product
           if (av_valid[1]) begin
-            av_acc[av_dim_d2] <= av_mac_sum;
+            av_prod_r <= av_mac_prod;
+          end
 
-            if (av_dim_d2 == 4'd15) begin
+          // Accumulate from registered product
+          if (av_valid[2]) begin
+            av_acc[av_dim_d3] <= av_mac_sum;
+
+            if (av_dim_d3 == 4'd15) begin
               if (av_pos == pos_r) begin
                 state <= S_AV_STORE;
               end else begin
                 av_pos  <= av_pos + 8'd1;
                 av_cnt  <= 5'd0;
-                av_valid <= 2'b00;
+                av_valid <= 3'b000;
               end
             end
           end
@@ -501,7 +522,7 @@ module attention (
             sc_pos    <= 8'd0;
             sc_cnt    <= 5'd0;
             score_acc <= 16'd0;
-            sc_valid  <= 2'b00;
+            sc_valid  <= 3'b000;
           end
         end
 

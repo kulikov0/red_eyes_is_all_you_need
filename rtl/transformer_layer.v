@@ -224,7 +224,7 @@ module transformer_layer (
   );
 
 
-  // GELU (fp16 PWL, 2-cycle pipeline)
+  // GELU: fp16 PWL, 3-cycle pipeline
   reg         gelu_valid_in;
   reg  [15:0] gelu_in;
   wire [15:0] gelu_out;
@@ -238,13 +238,26 @@ module transformer_layer (
   );
 
   // Sequential residual add: act_ram[i] + res_ram[i] -> act_ram[i]
+  // Track write address through pipe to match fp16_add latency
   reg [7:0] res_idx;
+  wire res_add_feed = (state == S_RES_ADD) && (res_idx < 8'd128);
+  wire res_add_valid_out;
   wire [15:0] res_add_out;
-  fp16_add_comb u_res_add (
-    .a_i  (act_ram[res_idx[6:0]]),
-    .b_i  (res_ram[res_idx[6:0]]),
-    .sum_o(res_add_out)
+  fp16_add u_res_add (
+    .clk_i  (clk_i),
+    .valid_i(res_add_feed),
+    .a_i    (act_ram[res_idx[6:0]]),
+    .b_i    (res_ram[res_idx[6:0]]),
+    .valid_o(res_add_valid_out),
+    .sum_o  (res_add_out)
   );
+
+  reg [6:0] res_wr_pipe [0:2];
+  integer rp;
+  always @(posedge clk_i) begin
+    res_wr_pipe[0] <= res_idx[6:0];
+    for (rp = 1; rp < 3; rp = rp + 1) res_wr_pipe[rp] <= res_wr_pipe[rp-1];
+  end
 
   // Weight store mux (active sel depends on FSM state)
   always @(*) begin
@@ -356,11 +369,13 @@ module transformer_layer (
           end
         end
 
-        // Sequential residual add: act_ram[i] = act_ram[i] + res_ram[i]
+        // Sequential residual add with 3-cycle pipelined fp16_add
         S_RES_ADD: begin
-          act_ram[res_idx[6:0]] <= res_add_out;
+          if (res_add_valid_out) begin
+            act_ram[res_wr_pipe[2]] <= res_add_out;
+          end
           res_idx <= res_idx + 8'd1;
-          if (res_idx == 8'd127) begin
+          if (res_idx == 8'd130) begin
             if (ln_which == 1'b0) begin
               // After res1: save new residual, do LN2
               ln_which <= 1'b1;
@@ -383,20 +398,20 @@ module transformer_layer (
           end
         end
 
-        // GELU: 3-cycle pipeline, reads/writes act_ram in-place
+        // GELU: 13-cycle pipeline, reads/writes act_ram in-place
         S_GELU: begin
           if (gelu_idx <= 10'd511) begin
             gelu_in       <= act_ram[gelu_idx[8:0]];
             gelu_valid_in <= 1'b1;
           end
 
-          if (gelu_idx >= 10'd3) begin
-            act_ram[gelu_idx[8:0] - 9'd3] <= gelu_out;
+          if (gelu_idx >= 10'd13) begin
+            act_ram[gelu_idx[8:0] - 9'd13] <= gelu_out;
           end
 
           gelu_idx <= gelu_idx + 10'd1;
 
-          if (gelu_idx == 10'd514) begin
+          if (gelu_idx == 10'd524) begin
             state         <= S_FF_DOWN;
             ff_down_start <= 1'b1;
           end

@@ -9,40 +9,37 @@ module tb_fp16;
 
   integer errors, fd;
   reg rst;
-  integer ti, ei, ri, base;
-  reg [15:0] mac_acc_reg;
+  integer ti, ri;
 
-  // fp16_add
+  // fp16_add: 3-cycle pipelined
+  reg         add_valid_in;
   reg  [15:0] add_a, add_b;
+  wire        add_valid_out;
   wire [15:0] add_sum;
-  fp16_add u_add (.clk_i(clk), .a_i(add_a), .b_i(add_b), .sum_o(add_sum));
+  fp16_add u_add (
+    .clk_i(clk), .valid_i(add_valid_in),
+    .a_i(add_a), .b_i(add_b),
+    .valid_o(add_valid_out), .sum_o(add_sum)
+  );
 
   localparam N_ADD = 50;
   reg [47:0] tv_add [0:N_ADD-1];
   initial $readmemh("/home/user/red_eyes_is_all_you_need/mem/fp16_add_vectors.hex", tv_add);
 
-  // fp16_mul
+  // fp16_mul: 2-cycle pipelined
+  reg         mul_valid_in;
   reg  [15:0] mul_a, mul_b;
+  wire        mul_valid_out;
   wire [15:0] mul_prod;
-  fp16_mul u_mul (.clk_i(clk), .a_i(mul_a), .b_i(mul_b), .prod_o(mul_prod));
+  fp16_mul u_mul (
+    .clk_i(clk), .valid_i(mul_valid_in),
+    .a_i(mul_a), .b_i(mul_b),
+    .valid_o(mul_valid_out), .prod_o(mul_prod)
+  );
 
   localparam N_MUL = 48;
   reg [47:0] tv_mul [0:N_MUL-1];
   initial $readmemh("/home/user/red_eyes_is_all_you_need/mem/fp16_mul_vectors.hex", tv_mul);
-
-  // fp16_mac
-  reg  [15:0] mac_a, mac_b, mac_acc_in;
-  wire [15:0] mac_acc_out;
-  fp16_mac u_mac (.clk_i(clk), .a_i(mac_a), .b_i(mac_b), .acc_i(mac_acc_in), .acc_o(mac_acc_out));
-
-  localparam N_MAC = 5;
-  localparam MAC_LEN = 16;
-  reg [31:0] tv_mac_pairs [0:N_MAC*MAC_LEN-1];
-  reg [15:0] tv_mac_exp [0:N_MAC-1];
-  initial begin
-    $readmemh("/home/user/red_eyes_is_all_you_need/mem/fp16_mac_pairs.hex", tv_mac_pairs);
-    $readmemh("/home/user/red_eyes_is_all_you_need/mem/fp16_mac_expected.hex", tv_mac_exp);
-  end
 
   // fp16_from_int8
   reg  [7:0]  cvt_in;
@@ -171,9 +168,8 @@ module tb_fp16;
 
   initial begin
     rst = 1'b1;
-    add_a = 16'd0; add_b = 16'd0;
-    mul_a = 16'd0; mul_b = 16'd0;
-    mac_a = 16'd0; mac_b = 16'd0; mac_acc_in = 16'd0;
+    add_valid_in = 1'b0; add_a = 16'd0; add_b = 16'd0;
+    mul_valid_in = 1'b0; mul_a = 16'd0; mul_b = 16'd0;
     cvt_in = 8'd0; to_in = 16'd0; q167_in = 16'd0; q115_in = 16'd0;
     rsqrt_valid_in = 1'b0; rsqrt_in = 16'd0;
     mv1_start = 1'b0; mv2_start = 1'b0;
@@ -187,13 +183,16 @@ module tb_fp16;
     rst = 1'b0;
     #10;
 
-    // fp16_add
+    // fp16_add: 3-cycle pipelined, drive valid high, wait 3 clocks for output
     $display("=== fp16_add (%0d tests) ===", N_ADD);
     $fwrite(fd, "=== fp16_add (%0d tests) ===\n", N_ADD);
+    add_valid_in = 1'b1;
     for (ti = 0; ti < N_ADD; ti = ti + 1) begin
       @(posedge clk);
       add_a = tv_add[ti][47:32];
       add_b = tv_add[ti][31:16];
+      @(posedge clk);
+      @(posedge clk);
       @(posedge clk); #1;
       begin : add_chk
         reg [15:0] expected;
@@ -214,14 +213,17 @@ module tb_fp16;
         end
       end
     end
+    add_valid_in = 1'b0;
 
-    // fp16_mul
+    // fp16_mul: 2-cycle pipelined, drive valid high, wait 2 clocks for output
     $display("=== fp16_mul (%0d tests) ===", N_MUL);
     $fwrite(fd, "=== fp16_mul (%0d tests) ===\n", N_MUL);
+    mul_valid_in = 1'b1;
     for (ti = 0; ti < N_MUL; ti = ti + 1) begin
       @(posedge clk);
       mul_a = tv_mul[ti][47:32];
       mul_b = tv_mul[ti][31:16];
+      @(posedge clk);
       @(posedge clk); #1;
       begin : mul_chk
         reg [15:0] expected;
@@ -242,37 +244,7 @@ module tb_fp16;
         end
       end
     end
-
-    // fp16_mac
-    $display("=== fp16_mac (%0d tests) ===", N_MAC);
-    $fwrite(fd, "=== fp16_mac (%0d tests) ===\n", N_MAC);
-    for (ti = 0; ti < N_MAC; ti = ti + 1) begin
-      base = ti * MAC_LEN;
-      mac_acc_reg = 16'd0;
-      for (ei = 0; ei < MAC_LEN; ei = ei + 1) begin
-        @(posedge clk);
-        mac_a = tv_mac_pairs[base + ei][31:16];
-        mac_b = tv_mac_pairs[base + ei][15:0];
-        mac_acc_in = mac_acc_reg;
-        @(posedge clk); #1;
-        mac_acc_reg = mac_acc_out;
-      end
-      begin : mac_chk
-        reg [15:0] expected;
-        reg nan_e, nan_g;
-        expected = tv_mac_exp[ti];
-        nan_e = (expected[14:10] == 5'd31) && (expected[9:0] != 10'd0);
-        nan_g = (mac_acc_reg[14:10] == 5'd31) && (mac_acc_reg[9:0] != 10'd0);
-        if (nan_e && nan_g) begin
-          $fwrite(fd, "MAC [%0d] got=%04x exp=%04x OK\n", ti, mac_acc_reg, expected);
-        end else if (mac_acc_reg !== expected) begin
-          $fwrite(fd, "MAC [%0d] got=%04x exp=%04x FAIL\n", ti, mac_acc_reg, expected);
-          errors = errors + 1;
-        end else begin
-          $fwrite(fd, "MAC [%0d] got=%04x exp=%04x OK\n", ti, mac_acc_reg, expected);
-        end
-      end
-    end
+    mul_valid_in = 1'b0;
 
     // fp16_from_int8
     $display("=== fp16_from_int8 (%0d tests) ===", N_FROM);

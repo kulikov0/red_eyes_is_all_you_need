@@ -12,4 +12,4 @@ set_property -dict {PACKAGE_PIN C13 IOSTANDARD LVCMOS33} [get_ports {led_n_o[1]}
 set_property -dict {PACKAGE_PIN D14 IOSTANDARD LVCMOS33} [get_ports {led_n_o[2]}]
 set_property -dict {PACKAGE_PIN D15 IOSTANDARD LVCMOS33} [get_ports {led_n_o[3]}]
 
-create_generated_clock -name clk_25 -source [get_ports sys_clk_p_i] -multiply_by 1 -divide_by 8 [get_pins mmcm_inst/CLKOUT0]
+create_generated_clock -name clk_40 -source [get_ports sys_clk_p_i] -multiply_by 1 -divide_by 5 [get_pins mmcm_inst/CLKOUT0]

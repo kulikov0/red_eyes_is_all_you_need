@@ -3,12 +3,13 @@
 //
 // Reads gamma/beta int8 from weight_store, dequants to fp16
 //
-// VAR_ACC pipelined: sub+sq | acc, 2 stages
+// VAR stage uses pipelined fp16_add (sub) and fp16_mul (sq), feeding into
+// a combinational accumulator add. 5-cycle drain after last issue
 // NORM pipelined: sub | mul_rsqrt | mul_gamma | add_beta, 4 stages
 //
-// FSM: IDLE -> MEAN_ACC -> MEAN_DIV -> VAR_PRE -> VAR_ACC -> VAR_DIV ->
+// FSM: IDLE -> MEAN_ACC -> MEAN_DIV -> VAR_ACC -> VAR_DRAIN -> VAR_DIV ->
 //      INV_SQRT -> LOAD_GAMMA -> LOAD_BETA -> NORM_FEED -> NORM_DRAIN
-// Latency: ~652 cycles
+// Latency: ~657 cycles
 
 module layernorm #(
   parameter DIM = 128
@@ -39,8 +40,8 @@ module layernorm #(
   localparam S_IDLE       = 4'd0;
   localparam S_MEAN_ACC   = 4'd1;
   localparam S_MEAN_DIV   = 4'd2;
-  localparam S_VAR_PRE    = 4'd3;
-  localparam S_VAR_ACC    = 4'd4;
+  localparam S_VAR_ACC    = 4'd3;
+  localparam S_VAR_DRAIN  = 4'd4;
   localparam S_VAR_DIV    = 4'd5;
   localparam S_INV_SQRT   = 4'd6;
   localparam S_LOAD_GAMMA = 4'd7;
@@ -51,6 +52,7 @@ module layernorm #(
 
   reg [3:0] state;
   reg [7:0] idx;
+  wire [7:0] prev = idx - 8'd1;
 
   // FP16 accumulators
   reg [15:0] sum_acc;
@@ -78,20 +80,34 @@ module layernorm #(
   wire [15:0] mean_div_out;
   fp16_mul_comb u_mean_div (.a_i(sum_acc), .b_i(INV_N), .prod_o(mean_div_out));
 
-  // Variance: diff = x - mean, sq = diff * diff
+  // Variance: diff = x - mean
+  wire        var_issue = (state == S_VAR_ACC);
+  wire        var_sub_valid_out;
   wire [15:0] var_diff;
-  fp16_add_comb u_var_sub (.a_i(x_elem), .b_i(neg_mean), .sum_o(var_diff));
+  fp16_add u_var_sub (
+    .clk_i(clk_i),
+    .valid_i(var_issue),
+    .a_i(x_elem),
+    .b_i(neg_mean),
+    .valid_o(var_sub_valid_out),
+    .sum_o(var_diff)
+  );
 
+  // sq = diff * diff
+  wire        var_sq_valid;
   wire [15:0] var_sq;
-  fp16_mul_comb u_var_sq (.a_i(var_diff), .b_i(var_diff), .prod_o(var_sq));
+  fp16_mul u_var_sq (
+    .clk_i(clk_i),
+    .valid_i(var_sub_valid_out),
+    .a_i(var_diff),
+    .b_i(var_diff),
+    .valid_o(var_sq_valid),
+    .prod_o(var_sq)
+  );
 
-  // VAR pipeline register
-  reg [15:0] var_sq_r;
-  reg        var_sq_valid;
-
-  // Variance accumulate from pipeline register
+  // Variance accumulator: single acc, combinational feedback
   wire [15:0] var_add_out;
-  fp16_add_comb u_var_add (.a_i(var_acc), .b_i(var_sq_r), .sum_o(var_add_out));
+  fp16_add_comb u_var_add (.a_i(var_acc), .b_i(var_sq), .sum_o(var_add_out));
 
   // VAR_DIV: var_acc * (1/128)
   wire [15:0] var_div_out;
@@ -114,8 +130,26 @@ module layernorm #(
   wire [15:0] dequant_fp16;
   fp16_from_int8 u_dequant (.val_i(w_data_i), .fp16_o(dequant_fp16));
 
+  wire deq_valid_in = ((state == S_LOAD_GAMMA) || (state == S_LOAD_BETA)) &&
+                      (idx >= 8'd1) && (idx <= DIM[7:0]);
+
+  wire        deq_valid_out;
   wire [15:0] dequant_scaled;
-  fp16_mul_comb u_deq_mul (.a_i(dequant_fp16), .b_i(w_scale_i), .prod_o(dequant_scaled));
+  fp16_mul u_deq_mul (
+    .clk_i(clk_i),
+    .valid_i(deq_valid_in),
+    .a_i(dequant_fp16),
+    .b_i(w_scale_i),
+    .valid_o(deq_valid_out),
+    .prod_o(dequant_scaled)
+  );
+
+  // Track gamma/beta write address through 2-cycle dequant pipeline
+  reg [$clog2(DIM)-1:0] deq_addr_r1, deq_addr_r2;
+  always @(posedge clk_i) begin
+    deq_addr_r1 <= prev[$clog2(DIM)-1:0];
+    deq_addr_r2 <= deq_addr_r1;
+  end
 
   // Normalize: diff = x - mean
   wire [15:0] norm_diff;
@@ -145,11 +179,8 @@ module layernorm #(
   wire [15:0] norm_out;
   fp16_add_comb u_norm_add (.a_i(p3_gamma), .b_i(beta_buf[p3_idx]), .sum_o(norm_out));
 
-  // BRAM pipeline index for gamma/beta capture
-  wire [7:0] prev = idx - 8'd1;
-
-  // Drain counter for NORM_DRAIN
-  reg [1:0] drain_cnt;
+  // Drain counter: used by S_VAR_DRAIN and S_NORM_DRAIN
+  reg [2:0] drain_cnt;
 
   always @(posedge clk_i) begin
     if (rst_i) begin
@@ -165,12 +196,10 @@ module layernorm #(
       y_we_o       <= 1'b0;
       w_sel_o      <= 6'd0;
       w_addr_o     <= 7'd0;
-      var_sq_r     <= 16'd0;
-      var_sq_valid <= 1'b0;
       p1_valid     <= 1'b0;
       p2_valid     <= 1'b0;
       p3_valid     <= 1'b0;
-      drain_cnt    <= 2'd0;
+      drain_cnt    <= 3'd0;
 
     end else begin
       done_o      <= 1'b0;
@@ -218,31 +247,35 @@ module layernorm #(
         end
 
         S_MEAN_DIV: begin
-          neg_mean     <= {~mean_div_out[15], mean_div_out[14:0]};
-          var_acc      <= 16'd0;
-          idx          <= 8'd0;
-          var_sq_valid <= 1'b0;
-          state        <= S_VAR_PRE;
+          neg_mean  <= {~mean_div_out[15], mean_div_out[14:0]};
+          var_acc   <= 16'd0;
+          idx       <= 8'd0;
+          state     <= S_VAR_ACC;
         end
 
-        // Prime the VAR pipeline: compute first diff+sq, register it
-        S_VAR_PRE: begin
-          var_sq_r     <= var_sq;
-          var_sq_valid <= 1'b1;
-          idx          <= idx + 8'd1;
-          state        <= S_VAR_ACC;
-        end
-
-        // Computes sq for current idx while accumulating previous sq
+        // Issue one (x[idx] - mean) sub per cycle, let sub->mul pipeline flow.
+        // Accumulate var_sq into var_acc combinationally whenever mul output is valid.
         S_VAR_ACC: begin
           if (var_sq_valid) begin
             var_acc <= var_add_out;
           end
-          var_sq_r     <= var_sq;
-          var_sq_valid <= (idx < DIM[7:0]);
-          idx          <= idx + 8'd1;
-          if (idx == DIM[7:0]) begin
+          if (idx == DIM[7:0] - 8'd1) begin
+            state     <= S_VAR_DRAIN;
+            drain_cnt <= 3'd0;
+          end else begin
+            idx <= idx + 8'd1;
+          end
+        end
+
+        // Wait for last 5 cycles of in-flight sub+mul to finish, keep accumulating
+        S_VAR_DRAIN: begin
+          if (var_sq_valid) begin
+            var_acc <= var_add_out;
+          end
+          if (drain_cnt == 3'd5) begin
             state <= S_VAR_DIV;
+          end else begin
+            drain_cnt <= drain_cnt + 3'd1;
           end
         end
 
@@ -266,11 +299,11 @@ module layernorm #(
           if (idx < DIM[7:0] - 8'd1) begin
             w_addr_o <= idx[6:0] + 7'd1;
           end
-          if (idx > 0) begin
-            gamma_buf[prev[6:0]] <= dequant_scaled;
+          if (deq_valid_out) begin
+            gamma_buf[deq_addr_r2] <= dequant_scaled;
           end
           idx <= idx + 8'd1;
-          if (idx == DIM[7:0]) begin
+          if (idx == DIM[7:0] + 8'd2) begin
             state    <= S_LOAD_BETA;
             idx      <= 8'd0;
             w_sel_o  <= gamma_sel_i + 6'd1;
@@ -282,11 +315,11 @@ module layernorm #(
           if (idx < DIM[7:0] - 8'd1) begin
             w_addr_o <= idx[6:0] + 7'd1;
           end
-          if (idx > 0) begin
-            beta_buf[prev[6:0]] <= dequant_scaled;
+          if (deq_valid_out) begin
+            beta_buf[deq_addr_r2] <= dequant_scaled;
           end
           idx <= idx + 8'd1;
-          if (idx == DIM[7:0]) begin
+          if (idx == DIM[7:0] + 8'd2) begin
             state    <= S_NORM_FEED;
             idx      <= 8'd0;
             p1_valid <= 1'b0;
@@ -300,14 +333,14 @@ module layernorm #(
           idx <= idx + 8'd1;
           if (idx == DIM[7:0] - 8'd1) begin
             state     <= S_NORM_DRAIN;
-            drain_cnt <= 2'd0;
+            drain_cnt <= 3'd0;
           end
         end
 
         // Flush remaining pipeline results
         S_NORM_DRAIN: begin
-          drain_cnt <= drain_cnt + 2'd1;
-          if (drain_cnt == 2'd2) begin
+          drain_cnt <= drain_cnt + 3'd1;
+          if (drain_cnt == 3'd2) begin
             state <= S_LN_DONE;
           end
         end

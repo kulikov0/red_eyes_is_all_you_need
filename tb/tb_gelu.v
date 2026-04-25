@@ -23,18 +23,18 @@ module tb_gelu;
   reg [15:0] test_mem [0:N_TESTS-1];
   initial $readmemh("/home/user/red_eyes_is_all_you_need/mem/gelu_test_inputs.hex", test_mem);
 
-  // Pipeline tracking: remember input that produced each output
-  reg [15:0] pipe0, pipe1;
+  // Pipeline tracking: GELU is 12-cycle pipelined, tracker is 12 deep
+  localparam GELU_LAT = 12;
+  reg [15:0] pipe_x [0:GELU_LAT-1];
 
-  integer fd, i, out_count;
+  integer fd, i, j, out_count;
 
   initial begin
     fd = $fopen("/home/user/red_eyes_is_all_you_need/logs/tb_gelu.log", "w");
 
     valid_in = 1'b0;
     x_in = 16'h0000;
-    pipe0 = 16'h0000;
-    pipe1 = 16'h0000;
+    for (j = 0; j < GELU_LAT; j = j + 1) pipe_x[j] = 16'h0000;
     out_count = 0;
 
     // Reset
@@ -43,19 +43,16 @@ module tb_gelu;
     $display("=== GELU FP16 Testbench (%0d tests) ===", N_TESTS);
     $fwrite(fd, "=== GELU FP16 Testbench (%0d tests) ===\n", N_TESTS);
 
-    // Stream inputs continuously, 1 per cycle
-    for (i = 0; i < N_TESTS + 2; i = i + 1) begin
+    // Stream inputs continuously, 1 per cycle, capturing valid_out
+    for (i = 0; i < N_TESTS + GELU_LAT; i = i + 1) begin
       @(posedge clk);
       #1;
-      // Capture output from 2 cycles ago
       if (valid_out) begin
-        $fwrite(fd, "IN=%04x OUT=%04x\n", pipe1, y_out);
+        $fwrite(fd, "IN=%04x OUT=%04x\n", pipe_x[GELU_LAT-1], y_out);
         out_count = out_count + 1;
       end
-      // Shift pipeline tracker
-      pipe1 = pipe0;
-      pipe0 = (i < N_TESTS) ? test_mem[i] : 16'h0000;
-      // Drive input
+      for (j = GELU_LAT-1; j > 0; j = j - 1) pipe_x[j] = pipe_x[j-1];
+      pipe_x[0] = (i < N_TESTS) ? test_mem[i] : 16'h0000;
       if (i < N_TESTS) begin
         x_in = test_mem[i];
         valid_in = 1'b1;
@@ -68,7 +65,7 @@ module tb_gelu;
     repeat(3) @(posedge clk);
     #1;
     if (valid_out) begin
-      $fwrite(fd, "IN=%04x OUT=%04x\n", pipe1, y_out);
+      $fwrite(fd, "IN=%04x OUT=%04x\n", pipe_x[GELU_LAT-1], y_out);
       out_count = out_count + 1;
     end
 

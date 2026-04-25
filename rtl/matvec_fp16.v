@@ -3,9 +3,9 @@
 // Snapshots input from shared RAM into internal distributed RAM, then computes
 // Writes result to shared RAM. Safe when input/output share the same RAM
 //
-// Dequant pipelined: BRAM+int8+mul_scale | mul_input+acc, 2 stages
-//
-// Latency: IN_DIM + OUT_DIM * (IN_DIM + 1) + 3 cycles
+// Pipeline: BRAM -> dequant fp16_mul -> MAC fp16_mul -> accumulate fp16_add
+// Accumulator feedback forces K=4 interleaved rows to cover add feedback
+// Assumes OUT_DIM % 4 == 0 and IN_DIM is a power of 2
 
 module matvec_fp16 #(
   parameter IN_DIM  = 128,
@@ -17,8 +17,8 @@ module matvec_fp16 #(
   input  wire [15:0] scale_i,
 
   // Weight BRAM
-  output reg [$clog2(OUT_DIM*IN_DIM)-1:0] weight_addr_o,
-  input  wire signed [7:0]                weight_data_i,
+  output wire [$clog2(OUT_DIM*IN_DIM)-1:0] weight_addr_o,
+  input  wire signed [7:0]                 weight_data_i,
 
   output reg [$clog2(IN_DIM)-1:0] act_raddr_o,
   input  wire [15:0]              act_rdata_i,
@@ -30,157 +30,199 @@ module matvec_fp16 #(
   output reg  done_o
 );
 
-  localparam ADDR_W = $clog2(OUT_DIM * IN_DIM);
-  localparam COL_W  = $clog2(IN_DIM) + 1;
-  localparam ROW_W  = $clog2(OUT_DIM) + 1;
+  localparam K     = 4;
+  localparam K_LOG = 2;
+  localparam COL_W = $clog2(IN_DIM);
+  localparam GRP_N = OUT_DIM / K;
+  localparam GRP_W = (GRP_N <= 1) ? 1 : $clog2(GRP_N);
 
-  // Internal snapshot of input vector
+  // Input activation snapshot
   reg [15:0] in_snap [0:IN_DIM-1];
 
-  // Dequant: int8 -> fp16 -> fp16*scale
-  wire [15:0] w_fp16;
-  fp16_from_int8 u_dequant_cvt (
-    .val_i(weight_data_i),
-    .fp16_o(w_fp16)
-  );
+  // K interleaved accumulators
+  reg [15:0] acc [0:K-1];
 
+  // FSM
+  localparam S_IDLE    = 3'd0;
+  localparam S_LOAD    = 3'd1;
+  localparam S_ZERO    = 3'd2;
+  localparam S_COMPUTE = 3'd3;
+  localparam S_DRAIN   = 3'd4;
+  localparam S_WRITE   = 3'd5;
+  localparam S_DONE    = 3'd6;
+
+  reg [2:0] state;
+
+  reg [GRP_W-1:0]   group;
+  reg [COL_W-1:0]   col;
+  reg [K_LOG-1:0]   k;
+  reg [3:0]         drain_cnt;
+  reg [K_LOG-1:0]   write_k;
+
+  // Combinational weight address: BRAM samples this at posedge, data appears next cycle
+  assign weight_addr_o = group * (K * IN_DIM) + k * IN_DIM + col;
+
+  // Dequant valid: 1-cycle delay of state==S_COMPUTE to align with BRAM output
+  reg state_compute_r;
+  always @(posedge clk_i) begin
+    if (rst_i) state_compute_r <= 1'b0;
+    else       state_compute_r <= (state == S_COMPUTE);
+  end
+  wire dq_valid_in = state_compute_r;
+
+  // Dequant: int8 weight -> fp16 -> multiply by scale
+  wire [15:0] w_fp16;
+  fp16_from_int8 u_from (.val_i(weight_data_i), .fp16_o(w_fp16));
+
+  wire        dq_valid_out;
   wire [15:0] w_dequant;
-  fp16_mul_comb u_dequant_mul (
+  fp16_mul u_dq (
+    .clk_i(clk_i),
+    .valid_i(dq_valid_in),
     .a_i(w_fp16),
     .b_i(scale_i),
+    .valid_o(dq_valid_out),
     .prod_o(w_dequant)
   );
 
-  // Pipeline register between dequant and MAC
-  reg [15:0]      dq_r;
-  reg [COL_W-1:0] dq_col;
-  reg             dq_valid;
-  reg             dq_last;
+  // Metadata shift registers track (col, k) through each pipeline stage
+  // col needed at u_mac input (3 cycles after BRAM sample = 3 stages from col)
+  // k needed at u_add input (5 cycles from k sample) and acc writeback (8 cycles)
+  reg [COL_W-1:0] col_pipe [0:2];
+  reg [K_LOG-1:0] k_pipe   [0:7];
+  integer p;
+  always @(posedge clk_i) begin
+    col_pipe[0] <= col;
+    col_pipe[1] <= col_pipe[0];
+    col_pipe[2] <= col_pipe[1];
 
-  // MAC from registered dequant: dq_r * in_snap[dq_col] + acc
+    k_pipe[0] <= k;
+    for (p = 1; p < 8; p = p + 1) k_pipe[p] <= k_pipe[p-1];
+  end
+
+  // MAC multiply: dequanted weight * matching input element
+  wire        mac_valid_out;
   wire [15:0] mac_prod;
-  fp16_mul_comb u_mac_mul (
-    .a_i(dq_r),
-    .b_i(in_snap[dq_col]),
+  fp16_mul u_mac (
+    .clk_i(clk_i),
+    .valid_i(dq_valid_out),
+    .a_i(w_dequant),
+    .b_i(in_snap[col_pipe[2]]),
+    .valid_o(mac_valid_out),
     .prod_o(mac_prod)
   );
 
-  reg [15:0] acc;
-  wire [15:0] acc_sum;
-  fp16_add_comb u_acc_add (
-    .a_i(acc),
+  // Accumulator add: feeds acc[k] back through 3-cycle fp16_add
+  // K=4 row interleaving covers the 3-cycle feedback with 1 cycle to spare
+  wire        add_valid_out;
+  wire [15:0] add_sum;
+  fp16_add u_add (
+    .clk_i(clk_i),
+    .valid_i(mac_valid_out),
+    .a_i(acc[k_pipe[4]]),
     .b_i(mac_prod),
-    .sum_o(acc_sum)
+    .valid_o(add_valid_out),
+    .sum_o(add_sum)
   );
 
-  reg [COL_W-1:0] col;
-  reg [ROW_W-1:0] row;      // output row counter, incremented on dq_last
-  reg [ROW_W-1:0] feed_row; // input row counter, leads row by 1 pipeline cycle
-  reg loading;
-  reg prefetch;
-  reg running;
-  reg draining;
+  integer i;
 
   always @(posedge clk_i) begin
     if (rst_i) begin
-      acc           <= 16'd0;
-      col           <= {COL_W{1'b0}};
-      row           <= {ROW_W{1'b0}};
-      loading       <= 1'b0;
-      prefetch      <= 1'b0;
-      running       <= 1'b0;
-      draining      <= 1'b0;
-      done_o        <= 1'b0;
-      res_we_o      <= 1'b0;
-      act_raddr_o   <= {$clog2(IN_DIM){1'b0}};
-      weight_addr_o <= {ADDR_W{1'b0}};
-      dq_valid      <= 1'b0;
-      dq_last       <= 1'b0;
-
-    end else if (start_i) begin
-      loading       <= 1'b1;
-      prefetch      <= 1'b0;
-      running       <= 1'b0;
-      draining      <= 1'b0;
-      act_raddr_o   <= {$clog2(IN_DIM){1'b0}};
-      col           <= {COL_W{1'b0}};
-      done_o        <= 1'b0;
-      res_we_o      <= 1'b0;
-      dq_valid      <= 1'b0;
-
-    end else if (loading) begin
-      in_snap[act_raddr_o] <= act_rdata_i;
-      if (act_raddr_o == (IN_DIM - 1)) begin
-        loading       <= 1'b0;
-        prefetch      <= 1'b1;
-        col           <= {COL_W{1'b0}};
-        row           <= {ROW_W{1'b0}};
-        feed_row      <= {ROW_W{1'b0}};
-        acc           <= 16'd0;
-        weight_addr_o <= {ADDR_W{1'b0}};
-      end else begin
-        act_raddr_o <= act_raddr_o + 1;
-      end
-
-    end else if (prefetch) begin
-      // First BRAM read latency cycle
-      prefetch      <= 1'b0;
-      running       <= 1'b1;
-      weight_addr_o <= weight_addr_o + 1;
-      dq_valid      <= 1'b0;
-
-    end else if (running || draining) begin
-      res_we_o <= 1'b0;
-
-      // Register dequant result and col index
-      if (running) begin
-        dq_r     <= w_dequant;
-        dq_col   <= col;
-        dq_valid <= 1'b1;
-        dq_last  <= (col == IN_DIM[COL_W-1:0] - 1);
-      end else begin
-        dq_valid <= 1'b0;
-      end
-
-      // MAC accumulate from pipeline register
-      if (dq_valid) begin
-        if (dq_last) begin
-          res_we_o    <= 1'b1;
-          res_waddr_o <= row[$clog2(OUT_DIM)-1:0];
-          res_wdata_o <= acc_sum;
-          acc         <= 16'd0;
-          row         <= row + 1;
-        end else begin
-          acc <= acc_sum;
-        end
-      end
-
-      // Advance weight address and column
-      if (running) begin
-        if (col == IN_DIM[COL_W-1:0] - 1) begin
-          col <= {COL_W{1'b0}};
-          if (feed_row == OUT_DIM[ROW_W-1:0] - 1) begin
-            running  <= 1'b0;
-            draining <= 1'b1;
-          end else begin
-            feed_row      <= feed_row + 1;
-            weight_addr_o <= weight_addr_o + 1;
-          end
-        end else begin
-          col           <= col + 1;
-          weight_addr_o <= weight_addr_o + 1;
-        end
-      end
-
-      // Drain: last dq_valid consumed, emit done
-      if (draining && !dq_valid) begin
-        draining <= 1'b0;
-        done_o   <= 1'b1;
-      end
+      state       <= S_IDLE;
+      done_o      <= 1'b0;
+      res_we_o    <= 1'b0;
+      act_raddr_o <= 0;
+      group       <= 0;
+      col         <= 0;
+      k           <= 0;
+      drain_cnt   <= 0;
+      write_k     <= 0;
 
     end else begin
       done_o   <= 1'b0;
       res_we_o <= 1'b0;
+
+      // Write back accumulator when add output is valid
+      if (add_valid_out) begin
+        acc[k_pipe[7]] <= add_sum;
+      end
+
+      case (state)
+        S_IDLE: begin
+          if (start_i) begin
+            state       <= S_LOAD;
+            act_raddr_o <= 0;
+            group       <= 0;
+          end
+        end
+
+        S_LOAD: begin
+          in_snap[act_raddr_o] <= act_rdata_i;
+          if (act_raddr_o == IN_DIM - 1) begin
+            state <= S_ZERO;
+          end else begin
+            act_raddr_o <= act_raddr_o + 1;
+          end
+        end
+
+        S_ZERO: begin
+          for (i = 0; i < K; i = i + 1) acc[i] <= 16'd0;
+          col   <= 0;
+          k     <= 0;
+          state <= S_COMPUTE;
+        end
+
+        // Issue one MAC per cycle, interleaving K rows across consecutive cycles
+        // Order: (col=0,k=0), (col=0,k=1), ..., (col=0,k=3), (col=1,k=0), ...
+        // Each row sees a new MAC every K cycles
+        S_COMPUTE: begin
+          if (k == K - 1) begin
+            k <= 0;
+            if (col == IN_DIM - 1) begin
+              state     <= S_DRAIN;
+              drain_cnt <= 0;
+            end else begin
+              col <= col + 1;
+            end
+          end else begin
+            k <= k + 1;
+          end
+        end
+
+        // Wait for last in-flight MACs to propagate through BRAM+mul+mul+add (8 cycles)
+        S_DRAIN: begin
+          if (drain_cnt == 4'd7) begin
+            state   <= S_WRITE;
+            write_k <= 0;
+          end else begin
+            drain_cnt <= drain_cnt + 1;
+          end
+        end
+
+        S_WRITE: begin
+          res_we_o    <= 1'b1;
+          res_waddr_o <= group * K + write_k;
+          res_wdata_o <= acc[write_k];
+          if (write_k == K - 1) begin
+            if (group == GRP_N - 1) begin
+              state <= S_DONE;
+            end else begin
+              group <= group + 1;
+              state <= S_ZERO;
+            end
+          end else begin
+            write_k <= write_k + 1;
+          end
+        end
+
+        S_DONE: begin
+          done_o <= 1'b1;
+          state  <= S_IDLE;
+        end
+
+        default: state <= S_IDLE;
+      endcase
     end
   end
 
