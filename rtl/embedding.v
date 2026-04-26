@@ -100,10 +100,10 @@ module embedding #(
 
   // Track write address through 5-cycle pipeline: mul (2) + add (3)
   reg [$clog2(DIM)-1:0] feed_addr_pipe [0:4];
-  integer p;
+  integer i;
   always @(posedge clk_i) begin
     feed_addr_pipe[0] <= prev[$clog2(DIM)-1:0];
-    for (p = 1; p < 5; p = p + 1) feed_addr_pipe[p] <= feed_addr_pipe[p-1];
+    for (i = 1; i < 5; i = i + 1) feed_addr_pipe[i] <= feed_addr_pipe[i-1];
   end
 
   always @(posedge clk_i) begin

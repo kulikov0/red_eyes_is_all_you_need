@@ -70,18 +70,30 @@ module layernorm #(
   // fp16(1/128) = 0x2000: sign=0, exp=8, frac=0 -> 2^(8-15) = 2^-7 = 1/128
   localparam [15:0] INV_N = 16'h2000;
 
-  // Combinational fp16 arithmetic
+  // Stall counter for MEAN and VAR accumulator pipelines
+  reg [1:0] acc_phase;
 
-  // MEAN_ACC: sum_acc + x[idx]
-  wire [15:0] mean_add_out;
-  fp16_add_comb u_mean_add (.a_i(sum_acc), .b_i(x_elem), .sum_o(mean_add_out));
+  // MEAN: sum_acc + x[idx]
+  wire mean_feed = (state == S_MEAN_ACC) && (acc_phase == 2'd0) &&
+                   (idx < DIM[7:0]);
+  wire        mean_v_out;
+  wire [15:0] mean_sum;
+  fp16_add u_mean_add (
+    .clk_i(clk_i),
+    .valid_i(mean_feed),
+    .a_i(sum_acc),
+    .b_i(x_elem),
+    .valid_o(mean_v_out),
+    .sum_o(mean_sum)
+  );
 
   // MEAN_DIV: sum * (1/128)
   wire [15:0] mean_div_out;
   fp16_mul_comb u_mean_div (.a_i(sum_acc), .b_i(INV_N), .prod_o(mean_div_out));
 
   // Variance: diff = x - mean
-  wire        var_issue = (state == S_VAR_ACC);
+  wire        var_issue = (state == S_VAR_ACC) && (acc_phase == 2'd0) &&
+                          (idx < DIM[7:0]);
   wire        var_sub_valid_out;
   wire [15:0] var_diff;
   fp16_add u_var_sub (
@@ -105,9 +117,17 @@ module layernorm #(
     .prod_o(var_sq)
   );
 
-  // Variance accumulator: single acc, combinational feedback
+  // Variance accumulator: var_acc + var_sq -> var_acc
+  wire        var_add_v_out;
   wire [15:0] var_add_out;
-  fp16_add_comb u_var_add (.a_i(var_acc), .b_i(var_sq), .sum_o(var_add_out));
+  fp16_add u_var_add (
+    .clk_i(clk_i),
+    .valid_i(var_sq_valid),
+    .a_i(var_acc),
+    .b_i(var_sq),
+    .valid_o(var_add_v_out),
+    .sum_o(var_add_out)
+  );
 
   // VAR_DIV: var_acc * (1/128)
   wire [15:0] var_div_out;
@@ -151,36 +171,66 @@ module layernorm #(
     deq_addr_r2 <= deq_addr_r1;
   end
 
-  // Normalize: diff = x - mean
-  wire [15:0] norm_diff;
-  fp16_add_comb u_norm_sub (.a_i(x_elem), .b_i(neg_mean), .sum_o(norm_diff));
+  wire norm_feed = (state == S_NORM_FEED);
 
-  reg [15:0]             p1_diff;
-  reg [$clog2(DIM)-1:0]  p1_idx;
-  reg                    p1_valid;
+  // diff = x - mean
+  wire        norm_sub_v_out;
+  wire [15:0] norm_diff;
+  fp16_add u_norm_sub (
+    .clk_i(clk_i),
+    .valid_i(norm_feed),
+    .a_i(x_elem),
+    .b_i(neg_mean),
+    .valid_o(norm_sub_v_out),
+    .sum_o(norm_diff)
+  );
 
   // scaled = diff * inv_std
+  wire        norm_mul1_v_out;
   wire [15:0] norm_scaled;
-  fp16_mul_comb u_norm_mul1 (.a_i(p1_diff), .b_i(inv_std), .prod_o(norm_scaled));
+  fp16_mul u_norm_mul1 (
+    .clk_i(clk_i),
+    .valid_i(norm_sub_v_out),
+    .a_i(norm_diff),
+    .b_i(inv_std),
+    .valid_o(norm_mul1_v_out),
+    .prod_o(norm_scaled)
+  );
 
-  reg [15:0]             p2_scaled;
-  reg [$clog2(DIM)-1:0]  p2_idx;
-  reg                    p2_valid;
+  // Track idx through the NORM pipeline for gamma/beta/writeback addressing
+  reg [$clog2(DIM)-1:0] idx_pipe [0:9];
+  integer i;
+  always @(posedge clk_i) begin
+    idx_pipe[0] <= idx[$clog2(DIM)-1:0];
+    for (i = 1; i < 10; i = i + 1) idx_pipe[i] <= idx_pipe[i-1];
+  end
 
   // gamma_applied = scaled * gamma
+  wire        norm_mul2_v_out;
   wire [15:0] norm_gamma;
-  fp16_mul_comb u_norm_mul2 (.a_i(p2_scaled), .b_i(gamma_buf[p2_idx]), .prod_o(norm_gamma));
-
-  reg [15:0]             p3_gamma;
-  reg [$clog2(DIM)-1:0]  p3_idx;
-  reg                    p3_valid;
+  fp16_mul u_norm_mul2 (
+    .clk_i(clk_i),
+    .valid_i(norm_mul1_v_out),
+    .a_i(norm_scaled),
+    .b_i(gamma_buf[idx_pipe[4]]),
+    .valid_o(norm_mul2_v_out),
+    .prod_o(norm_gamma)
+  );
 
   // out = gamma_applied + beta
+  wire        norm_add_v_out;
   wire [15:0] norm_out;
-  fp16_add_comb u_norm_add (.a_i(p3_gamma), .b_i(beta_buf[p3_idx]), .sum_o(norm_out));
+  fp16_add u_norm_add (
+    .clk_i(clk_i),
+    .valid_i(norm_mul2_v_out),
+    .a_i(norm_gamma),
+    .b_i(beta_buf[idx_pipe[6]]),
+    .valid_o(norm_add_v_out),
+    .sum_o(norm_out)
+  );
 
   // Drain counter: used by S_VAR_DRAIN and S_NORM_DRAIN
-  reg [2:0] drain_cnt;
+  reg [3:0] drain_cnt;
 
   always @(posedge clk_i) begin
     if (rst_i) begin
@@ -196,53 +246,43 @@ module layernorm #(
       y_we_o       <= 1'b0;
       w_sel_o      <= 6'd0;
       w_addr_o     <= 7'd0;
-      p1_valid     <= 1'b0;
-      p2_valid     <= 1'b0;
-      p3_valid     <= 1'b0;
-      drain_cnt    <= 3'd0;
+      drain_cnt    <= 4'd0;
+      acc_phase    <= 2'd0;
 
     end else begin
       done_o      <= 1'b0;
       rsqrt_valid <= 1'b0;
       y_we_o      <= 1'b0;
 
-      // NORM pipeline advance runs during NORM_FEED and NORM_DRAIN
-      if (state == S_NORM_FEED || state == S_NORM_DRAIN) begin
-        p1_diff  <= norm_diff;
-        p1_idx   <= idx[$clog2(DIM)-1:0];
-        p1_valid <= (state == S_NORM_FEED);
+      if (mean_v_out)    sum_acc <= mean_sum;
+      if (var_add_v_out) var_acc <= var_add_out;
 
-        p2_scaled <= norm_scaled;
-        p2_idx    <= p1_idx;
-        p2_valid  <= p1_valid;
-
-        p3_gamma <= norm_gamma;
-        p3_idx   <= p2_idx;
-        p3_valid <= p2_valid;
-
-        if (p3_valid) begin
-          y_we_o    <= 1'b1;
-          y_waddr_o <= p3_idx;
-          y_wdata_o <= norm_out;
-        end
+      if (norm_add_v_out) begin
+        y_we_o    <= 1'b1;
+        y_waddr_o <= idx_pipe[9];
+        y_wdata_o <= norm_out;
       end
 
       case (state)
 
         S_IDLE: begin
           if (start_i) begin
-            state   <= S_MEAN_ACC;
-            idx     <= 8'd0;
-            sum_acc <= 16'd0;
-            busy_o  <= 1'b1;
+            state     <= S_MEAN_ACC;
+            idx       <= 8'd0;
+            sum_acc   <= 16'd0;
+            acc_phase <= 2'd0;
+            busy_o    <= 1'b1;
           end
         end
 
         S_MEAN_ACC: begin
-          sum_acc <= mean_add_out;
-          idx     <= idx + 8'd1;
-          if (idx == DIM[7:0] - 8'd1) begin
-            state <= S_MEAN_DIV;
+          acc_phase <= acc_phase + 2'd1;
+          if (acc_phase == 2'd3) begin
+            if (idx == DIM[7:0] - 8'd1) begin
+              state <= S_MEAN_DIV;
+            end else begin
+              idx <= idx + 8'd1;
+            end
           end
         end
 
@@ -250,32 +290,29 @@ module layernorm #(
           neg_mean  <= {~mean_div_out[15], mean_div_out[14:0]};
           var_acc   <= 16'd0;
           idx       <= 8'd0;
+          acc_phase <= 2'd0;
           state     <= S_VAR_ACC;
         end
 
-        // Issue one (x[idx] - mean) sub per cycle, let sub->mul pipeline flow.
-        // Accumulate var_sq into var_acc combinationally whenever mul output is valid.
+        // Issue (x[idx] - mean) sub on phase==0, let pipeline flow
         S_VAR_ACC: begin
-          if (var_sq_valid) begin
-            var_acc <= var_add_out;
-          end
-          if (idx == DIM[7:0] - 8'd1) begin
-            state     <= S_VAR_DRAIN;
-            drain_cnt <= 3'd0;
-          end else begin
-            idx <= idx + 8'd1;
+          acc_phase <= acc_phase + 2'd1;
+          if (acc_phase == 2'd3) begin
+            if (idx == DIM[7:0] - 8'd1) begin
+              state     <= S_VAR_DRAIN;
+              drain_cnt <= 4'd0;
+            end else begin
+              idx <= idx + 8'd1;
+            end
           end
         end
 
-        // Wait for last 5 cycles of in-flight sub+mul to finish, keep accumulating
+        // Wait for last in-flight sub->mul->add to finish
         S_VAR_DRAIN: begin
-          if (var_sq_valid) begin
-            var_acc <= var_add_out;
-          end
-          if (drain_cnt == 3'd5) begin
+          if (drain_cnt == 4'd9) begin
             state <= S_VAR_DIV;
           end else begin
-            drain_cnt <= drain_cnt + 3'd1;
+            drain_cnt <= drain_cnt + 4'd1;
           end
         end
 
@@ -320,11 +357,8 @@ module layernorm #(
           end
           idx <= idx + 8'd1;
           if (idx == DIM[7:0] + 8'd2) begin
-            state    <= S_NORM_FEED;
-            idx      <= 8'd0;
-            p1_valid <= 1'b0;
-            p2_valid <= 1'b0;
-            p3_valid <= 1'b0;
+            state <= S_NORM_FEED;
+            idx   <= 8'd0;
           end
         end
 
@@ -333,14 +367,14 @@ module layernorm #(
           idx <= idx + 8'd1;
           if (idx == DIM[7:0] - 8'd1) begin
             state     <= S_NORM_DRAIN;
-            drain_cnt <= 3'd0;
+            drain_cnt <= 4'd0;
           end
         end
 
-        // Flush remaining pipeline results
+        // Flush remaining pipeline results, write captured by add valid_o
         S_NORM_DRAIN: begin
-          drain_cnt <= drain_cnt + 3'd1;
-          if (drain_cnt == 3'd2) begin
+          drain_cnt <= drain_cnt + 4'd1;
+          if (drain_cnt == 4'd10) begin
             state <= S_LN_DONE;
           end
         end

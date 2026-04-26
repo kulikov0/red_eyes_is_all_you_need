@@ -253,10 +253,10 @@ module transformer_layer (
   );
 
   reg [6:0] res_wr_pipe [0:2];
-  integer rp;
+  integer i;
   always @(posedge clk_i) begin
     res_wr_pipe[0] <= res_idx[6:0];
-    for (rp = 1; rp < 3; rp = rp + 1) res_wr_pipe[rp] <= res_wr_pipe[rp-1];
+    for (i = 1; i < 3; i = i + 1) res_wr_pipe[i] <= res_wr_pipe[i-1];
   end
 
   // Weight store mux (active sel depends on FSM state)

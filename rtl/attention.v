@@ -198,10 +198,8 @@ module attention (
   // AV computation pipeline
   reg [4:0]  av_cnt;
   reg [7:0]  av_pos;
-  reg [2:0]  av_valid;
-  reg [3:0]  av_dim_d1;
-  reg [3:0]  av_dim_d2;
-  reg [3:0]  av_dim_d3;
+  reg [1:0]  av_bram_v;
+  reg [3:0]  av_dim_pipe [0:6];
 
   // Softmax output capture counter
   reg [8:0] sm_out_cnt;
@@ -257,27 +255,38 @@ module attention (
     .q167_o(sc_q167)
   );
 
-  // AV pipeline: Q1.15 -> fp16, then fp16 * V, accumulated
+  // AV: Q1.15 -> fp16, then fp16 * V, accumulated into av_acc[d]
   wire [15:0] av_attn_fp16;
   q115_to_fp16 u_av_cvt (
     .val_i(attn_buf[av_pos]),
     .fp16_o(av_attn_fp16)
   );
 
+  wire av_issue = (state == S_AV) && (av_cnt < 5'd16);
+  wire av_mul_v_in = av_bram_v[1];
+
+  wire        av_mul_v_out;
   wire [15:0] av_mac_prod;
-  fp16_mul_comb u_av_mul (
+  fp16_mul u_av_mul (
+    .clk_i(clk_i),
+    .valid_i(av_mul_v_in),
     .a_i(av_attn_fp16),
     .b_i(v_rdata_i),
+    .valid_o(av_mul_v_out),
     .prod_o(av_mac_prod)
   );
 
-  // Pipeline register between mul and accumulator add
-  reg [15:0] av_prod_r;
+  wire [3:0] av_dim_at_add_in  = av_dim_pipe[3];
+  wire [3:0] av_dim_at_add_out = av_dim_pipe[6];
 
+  wire        av_add_v_out;
   wire [15:0] av_mac_sum;
-  fp16_add_comb u_av_add (
-    .a_i(av_acc[av_dim_d3]),
-    .b_i(av_prod_r),
+  fp16_add u_av_add (
+    .clk_i(clk_i),
+    .valid_i(av_mul_v_out),
+    .a_i(av_acc[av_dim_at_add_in]),
+    .b_i(av_mac_prod),
+    .valid_o(av_add_v_out),
     .sum_o(av_mac_sum)
   );
 
@@ -316,6 +325,7 @@ module attention (
       sm_in_valid <= 1'b0;
       k_we_o      <= 1'b0;
       v_we_o      <= 1'b0;
+      av_bram_v   <= 2'b00;
     end else begin
       done_o      <= 1'b0;
       qkv_start   <= 1'b0;
@@ -324,6 +334,13 @@ module attention (
       sm_in_valid <= 1'b0;
       k_we_o      <= 1'b0;
       v_we_o      <= 1'b0;
+
+      av_bram_v <= {av_bram_v[0], av_issue};
+      av_dim_pipe[0] <= av_cnt[3:0];
+      for (j = 1; j < 7; j = j + 1) av_dim_pipe[j] <= av_dim_pipe[j-1];
+      if (av_add_v_out) begin
+        av_acc[av_dim_at_add_out] <= av_mac_sum;
+      end
 
       case (state)
 
@@ -451,10 +468,10 @@ module attention (
             sm_out_cnt <= sm_out_cnt + 9'd1;
           end
           if (sm_done) begin
-            state   <= S_AV;
-            av_pos  <= 8'd0;
-            av_cnt  <= 5'd0;
-            av_valid <= 3'b000;
+            state     <= S_AV;
+            av_pos    <= 8'd0;
+            av_cnt    <= 5'd0;
+            av_bram_v <= 2'b00;
             for (j = 0; j < 16; j = j + 1) begin
               av_acc[j] <= 16'd0;
             end
@@ -467,14 +484,6 @@ module attention (
           kv_head_o  <= head_idx;
           v_we_o     <= 1'b0;
 
-          // Dim delay line
-          av_dim_d1 <= av_cnt[3:0];
-          av_dim_d2 <= av_dim_d1;
-          av_dim_d3 <= av_dim_d2;
-
-          // Valid pipeline
-          av_valid <= {av_valid[1:0], (av_cnt < 5'd16) ? 1'b1 : 1'b0};
-
           // Issue V cache read address for dims 0..15
           if (av_cnt < 5'd16) begin
             kv_pos_o <= av_pos;
@@ -483,23 +492,14 @@ module attention (
 
           av_cnt <= av_cnt + 5'd1;
 
-          // Register mul product
-          if (av_valid[1]) begin
-            av_prod_r <= av_mac_prod;
-          end
-
-          // Accumulate from registered product
-          if (av_valid[2]) begin
-            av_acc[av_dim_d3] <= av_mac_sum;
-
-            if (av_dim_d3 == 4'd15) begin
-              if (av_pos == pos_r) begin
-                state <= S_AV_STORE;
-              end else begin
-                av_pos  <= av_pos + 8'd1;
-                av_cnt  <= 5'd0;
-                av_valid <= 3'b000;
-              end
+          // Position transition fires when last add output has been written
+          if (av_add_v_out && av_dim_at_add_out == 4'd15) begin
+            if (av_pos == pos_r) begin
+              state <= S_AV_STORE;
+            end else begin
+              av_pos    <= av_pos + 8'd1;
+              av_cnt    <= 5'd0;
+              av_bram_v <= 2'b00;
             end
           end
         end

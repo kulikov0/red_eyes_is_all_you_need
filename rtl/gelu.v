@@ -176,10 +176,10 @@ module gelu (
   // Shift x_i through to align with final multiply
   // Latency from x_i to u_mul_final input: 1 (s1) + 2 (mul) + 3 (add) + 1 (erf_r) + 3 (add_one) = 10
   reg [15:0] x_pipe [0:9];
-  integer p;
+  integer i;
   always @(posedge clk_i) begin
     x_pipe[0] <= x_i;
-    for (p = 1; p < 10; p = p + 1) x_pipe[p] <= x_pipe[p-1];
+    for (i = 1; i < 10; i = i + 1) x_pipe[i] <= x_pipe[i-1];
   end
 
   wire [15:0] x_aligned = x_pipe[9];

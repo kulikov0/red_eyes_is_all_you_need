@@ -90,14 +90,14 @@ module matvec_fp16 #(
   // k needed at u_add input (5 cycles from k sample) and acc writeback (8 cycles)
   reg [COL_W-1:0] col_pipe [0:2];
   reg [K_LOG-1:0] k_pipe   [0:7];
-  integer p;
+  integer i;
   always @(posedge clk_i) begin
     col_pipe[0] <= col;
     col_pipe[1] <= col_pipe[0];
     col_pipe[2] <= col_pipe[1];
 
     k_pipe[0] <= k;
-    for (p = 1; p < 8; p = p + 1) k_pipe[p] <= k_pipe[p-1];
+    for (i = 1; i < 8; i = i + 1) k_pipe[i] <= k_pipe[i-1];
   end
 
   // MAC multiply: dequanted weight * matching input element
@@ -125,7 +125,6 @@ module matvec_fp16 #(
     .sum_o(add_sum)
   );
 
-  integer i;
 
   always @(posedge clk_i) begin
     if (rst_i) begin
