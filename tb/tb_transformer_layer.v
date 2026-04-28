@@ -35,6 +35,26 @@ module tb_transformer_layer;
   wire [15:0] v_wdata;
   wire [15:0] v_rdata;
 
+  // KV boundary register: mirrors transformer_top's reg between DUT and cache
+  reg [1:0]  kv_layer_r;
+  reg [2:0]  kv_head_r;
+  reg [7:0]  kv_pos_r;
+  reg [3:0]  kv_dim_r;
+  reg        k_we_r;
+  reg [15:0] k_wdata_r;
+  reg        v_we_r;
+  reg [15:0] v_wdata_r;
+  always @(posedge clk) begin
+    kv_layer_r <= kv_layer;
+    kv_head_r  <= kv_head;
+    kv_pos_r   <= kv_pos;
+    kv_dim_r   <= kv_dim;
+    k_we_r     <= k_we;
+    k_wdata_r  <= k_wdata;
+    v_we_r     <= v_we;
+    v_wdata_r  <= v_wdata;
+  end
+
   wire done;
 
   wire [15:0] w_scale;
@@ -51,24 +71,24 @@ module tb_transformer_layer;
   // K cache (fp16, DATA_W=16)
   kv_cache #(.DATA_W(16)) u_k_cache (
     .clk_i  (clk),
-    .layer_i(kv_layer),
-    .head_i (kv_head),
-    .pos_i  (kv_pos),
-    .dim_i  (kv_dim),
-    .we_i   (k_we),
-    .wdata_i(k_wdata),
+    .layer_i(kv_layer_r),
+    .head_i (kv_head_r),
+    .pos_i  (kv_pos_r),
+    .dim_i  (kv_dim_r),
+    .we_i   (k_we_r),
+    .wdata_i(k_wdata_r),
     .rdata_o(k_rdata)
   );
 
   // V cache (fp16, DATA_W=16)
   kv_cache #(.DATA_W(16)) u_v_cache (
     .clk_i  (clk),
-    .layer_i(kv_layer),
-    .head_i (kv_head),
-    .pos_i  (kv_pos),
-    .dim_i  (kv_dim),
-    .we_i   (v_we),
-    .wdata_i(v_wdata),
+    .layer_i(kv_layer_r),
+    .head_i (kv_head_r),
+    .pos_i  (kv_pos_r),
+    .dim_i  (kv_dim_r),
+    .we_i   (v_we_r),
+    .wdata_i(v_wdata_r),
     .rdata_o(v_rdata)
   );
 

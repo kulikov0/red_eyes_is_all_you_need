@@ -17,10 +17,8 @@
 //   QKV = {layer_i, 3'b000} + 4   (4, 12, 20, 28)
 //   Proj = {layer_i, 3'b000} + 5  (5, 13, 21, 29)
 //
-// KV cache 2-cycle read latency pipeline:
-//   Cycle T:   set addr -> cache latches at posedge T+1
-//   Cycle T+1: BRAM reads internally, sel_r latches
-//   Cycle T+2: rdata_o valid
+// KV cache read latency: kv_cache itself is 2 cycles, plus 1 cycle for the
+// transformer_top boundary register, so addr -> rdata is 3 cycles end-to-end
 //
 // Latency: 49154 + 256 + 8*(36*(P+1) + 517) + 16386 + 10 cycles
 //   P = position (0..255). At P=255: ~143,678 cycles
@@ -71,14 +69,15 @@ module attention (
                    S_QKV         = 4'd1,
                    S_KV_STORE    = 4'd2,
                    S_SCORE       = 4'd3,
-                   S_SCORE_SCALE = 4'd4,
-                   S_SCORE_PAD   = 4'd5,
-                   S_SM_WAIT     = 4'd6,
-                   S_AV          = 4'd7,
-                   S_AV_STORE    = 4'd8,
-                   S_NEXT_HEAD   = 4'd9,
-                   S_PROJ        = 4'd10,
-                   S_DONE        = 4'd11;
+                   S_SCORE_MUL   = 4'd4,
+                   S_SCORE_SCALE = 4'd5,
+                   S_SCORE_PAD   = 4'd6,
+                   S_SM_WAIT     = 4'd7,
+                   S_AV          = 4'd8,
+                   S_AV_STORE    = 4'd9,
+                   S_NEXT_HEAD   = 4'd10,
+                   S_PROJ        = 4'd11,
+                   S_DONE        = 4'd12;
 
   reg [3:0] state;
 
@@ -189,15 +188,15 @@ module attention (
   // Score computation pipeline
   reg [4:0]  sc_cnt;
   reg [7:0]  sc_pos;
-  reg [3:0]  sc_dim_pipe [0:1];
-  reg [1:0]  sc_bram_v;
+  reg [3:0]  sc_dim_pipe [0:2];
+  reg [2:0]  sc_bram_v;
   reg [4:0]  sc_red_in_cnt;
 
   // AV computation pipeline
   reg [4:0]  av_cnt;
   reg [7:0]  av_pos;
-  reg [1:0]  av_bram_v;
-  reg [3:0]  av_dim_pipe [0:6];
+  reg [2:0]  av_bram_v;
+  reg [3:0]  av_dim_pipe [0:7];
 
   // Softmax output capture counter
   reg [8:0] sm_out_cnt;
@@ -225,8 +224,8 @@ module attention (
   wire [15:0] sc_mac_prod;
   fp16_mul u_sc_mul (
     .clk_i  (clk_i),
-    .valid_i(sc_bram_v[1]),
-    .a_i    (q_head[sc_dim_pipe[1]]),
+    .valid_i(sc_bram_v[2]),
+    .a_i    (q_head[sc_dim_pipe[2]]),
     .b_i    (k_rdata_i),
     .valid_o(sc_mul_v_out),
     .prod_o (sc_mac_prod)
@@ -249,8 +248,10 @@ module attention (
     .sum_o  (sc_red_sum)
   );
 
-  // Final dot product scaled by 1/sqrt(d_k) and converted to Q16.7
+  // Final dot product scaled by 1/sqrt(d_k) and converted to Q16.7. Pipeline
+  // register sc_scaled_r splits the long fp16_mul_comb -> fp16_to_q167 chain
   reg [15:0] sc_dot_r;
+  reg [15:0] sc_scaled_r;
 
   wire [15:0] sc_scaled;
   fp16_mul_comb u_sc_scale (
@@ -259,10 +260,12 @@ module attention (
     .prod_o(sc_scaled)
   );
 
+  always @(posedge clk_i) sc_scaled_r <= sc_scaled;
+
   // Convert fp16 score to Q16.7 for softmax
   wire [23:0] sc_q167;
   fp16_to_q167 u_sc_cvt (
-    .val_i(sc_scaled),
+    .val_i(sc_scaled_r),
     .q167_o(sc_q167)
   );
 
@@ -273,22 +276,25 @@ module attention (
     .fp16_o(av_attn_fp16)
   );
 
+  reg [15:0] av_attn_fp16_r;
+  always @(posedge clk_i) av_attn_fp16_r <= av_attn_fp16;
+
   wire av_issue = (state == S_AV) && (av_cnt < 5'd16);
-  wire av_mul_v_in = av_bram_v[1];
+  wire av_mul_v_in = av_bram_v[2];
 
   wire        av_mul_v_out;
   wire [15:0] av_mac_prod;
   fp16_mul u_av_mul (
     .clk_i(clk_i),
     .valid_i(av_mul_v_in),
-    .a_i(av_attn_fp16),
+    .a_i(av_attn_fp16_r),
     .b_i(v_rdata_i),
     .valid_o(av_mul_v_out),
     .prod_o(av_mac_prod)
   );
 
-  wire [3:0] av_dim_at_add_in  = av_dim_pipe[3];
-  wire [3:0] av_dim_at_add_out = av_dim_pipe[6];
+  wire [3:0] av_dim_at_add_in  = av_dim_pipe[4];
+  wire [3:0] av_dim_at_add_out = av_dim_pipe[7];
 
   wire        av_add_v_out;
   wire [15:0] av_mac_sum;
@@ -336,8 +342,8 @@ module attention (
       sm_in_valid <= 1'b0;
       k_we_o      <= 1'b0;
       v_we_o      <= 1'b0;
-      av_bram_v   <= 2'b00;
-      sc_bram_v   <= 2'b00;
+      av_bram_v   <= 3'b000;
+      sc_bram_v   <= 3'b000;
     end else begin
       done_o      <= 1'b0;
       qkv_start   <= 1'b0;
@@ -347,16 +353,17 @@ module attention (
       k_we_o      <= 1'b0;
       v_we_o      <= 1'b0;
 
-      av_bram_v <= {av_bram_v[0], av_issue};
+      av_bram_v <= {av_bram_v[1:0], av_issue};
       av_dim_pipe[0] <= av_cnt[3:0];
-      for (j = 1; j < 7; j = j + 1) av_dim_pipe[j] <= av_dim_pipe[j-1];
+      for (j = 1; j < 8; j = j + 1) av_dim_pipe[j] <= av_dim_pipe[j-1];
       if (av_add_v_out) begin
         av_acc[av_dim_at_add_out] <= av_mac_sum;
       end
 
-      sc_bram_v <= {sc_bram_v[0], sc_issue};
+      sc_bram_v <= {sc_bram_v[1:0], sc_issue};
       sc_dim_pipe[0] <= sc_cnt[3:0];
       sc_dim_pipe[1] <= sc_dim_pipe[0];
+      sc_dim_pipe[2] <= sc_dim_pipe[1];
 
       if (sc_clear)            sc_red_in_cnt <= 5'd0;
       else if (sc_mul_v_out)   sc_red_in_cnt <= sc_red_in_cnt + 5'd1;
@@ -401,7 +408,7 @@ module attention (
             sm_start <= 1'b1;
             sc_pos   <= 8'd0;
             sc_cnt   <= 5'd0;
-            sc_bram_v <= 2'b00;
+            sc_bram_v <= 3'b000;
           end
           kv_cnt <= kv_cnt + 9'd1;
         end
@@ -422,8 +429,12 @@ module attention (
 
           if (sc_red_done) begin
             sc_dot_r <= sc_red_sum;
-            state    <= S_SCORE_SCALE;
+            state    <= S_SCORE_MUL;
           end
+        end
+
+        S_SCORE_MUL: begin
+          state <= S_SCORE_SCALE;
         end
 
         // Scale registered dot product and feed to softmax
@@ -442,7 +453,7 @@ module attention (
           end else begin
             sc_pos   <= sc_pos + 8'd1;
             sc_cnt   <= 5'd0;
-            sc_bram_v <= 2'b00;
+            sc_bram_v <= 3'b000;
             state    <= S_SCORE;
           end
         end
@@ -468,7 +479,7 @@ module attention (
             state     <= S_AV;
             av_pos    <= 8'd0;
             av_cnt    <= 5'd0;
-            av_bram_v <= 2'b00;
+            av_bram_v <= 3'b000;
             for (j = 0; j < 16; j = j + 1) begin
               av_acc[j] <= 16'd0;
             end
@@ -496,7 +507,7 @@ module attention (
             end else begin
               av_pos    <= av_pos + 8'd1;
               av_cnt    <= 5'd0;
-              av_bram_v <= 2'b00;
+              av_bram_v <= 3'b000;
             end
           end
         end
@@ -518,7 +529,7 @@ module attention (
             sm_start  <= 1'b1;
             sc_pos    <= 8'd0;
             sc_cnt    <= 5'd0;
-            sc_bram_v <= 2'b00;
+            sc_bram_v <= 3'b000;
           end
         end
 

@@ -56,8 +56,9 @@ module softmax #(
   localparam [2:0] S_IDLE    = 3'd0,
                    S_LOAD    = 3'd1,
                    S_EXP_ACC = 3'd2,
-                   S_LN_SUM  = 3'd3,
-                   S_NORM    = 3'd4;
+                   S_LN_LOD  = 3'd3,
+                   S_LN_SUM  = 3'd4,
+                   S_NORM    = 3'd5;
 
   reg [2:0] state;
 
@@ -159,7 +160,7 @@ module softmax #(
                            exp_sum_raw[15:0]));
 
 
-  // LOD for sum_acc (combinational)
+  // LOD for sum_acc; _r split breaks the sum_acc -> LOD -> mul -> compare -> ln_offset path
   reg [4:0] sum_lod;
   reg [3:0] sum_mantissa;
   reg       sum_is_zero;
@@ -177,11 +178,20 @@ module softmax #(
     end
   end
 
+  reg [4:0] sum_lod_r;
+  reg [3:0] sum_mantissa_r;
+  reg       sum_is_zero_r;
+  always @(posedge clk_i) begin
+    sum_lod_r      <= sum_lod;
+    sum_mantissa_r <= sum_mantissa;
+    sum_is_zero_r  <= sum_is_zero;
+  end
 
-  // LN_SUM (combinational from sum_acc)
-  wire signed [5:0]  k_minus_15 = {1'b0, sum_lod} - 6'sd15;
+
+  // LN_SUM
+  wire signed [5:0]  k_minus_15 = {1'b0, sum_lod_r} - 6'sd15;
   wire signed [12:0] kln2_term  = k_minus_15 * $signed({1'b0, LN2_Q7});
-  wire [7:0]         ln1ps_val  = ln1ps_lut[sum_mantissa];
+  wire [7:0]         ln1ps_val  = ln1ps_lut[sum_mantissa_r];
   wire signed [12:0] ln_raw     = kln2_term + $signed({1'b0, ln1ps_val});
 
 
@@ -266,15 +276,20 @@ module softmax #(
           if (p1_valid) begin
             sum_acc <= sum_acc + {8'd0, exp_val};
             if (p1_last) begin
-              state <= S_LN_SUM;
+              state <= S_LN_LOD;
               cnt   <= {CNT_W{1'b0}};
             end
           end
         end
 
 
+        S_LN_LOD: begin
+          state <= S_LN_SUM;
+        end
+
+
         S_LN_SUM: begin
-          if (sum_is_zero) begin
+          if (sum_is_zero_r) begin
             ln_offset <= D_CLIP;
           end else if (ln_raw < 13'sd0) begin
             ln_offset <= 11'd0;

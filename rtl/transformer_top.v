@@ -34,20 +34,20 @@ module transformer_top (
   input  wire [15:0] w_scale_i,
 
   // K cache (fp16)
-  output wire        k_we_o,
-  output wire [15:0] k_wdata_o,
+  output reg         k_we_o,
+  output reg  [15:0] k_wdata_o,
   input  wire [15:0] k_rdata_i,
 
   // V cache (fp16)
-  output wire        v_we_o,
-  output wire [15:0] v_wdata_o,
+  output reg         v_we_o,
+  output reg  [15:0] v_wdata_o,
   input  wire [15:0] v_rdata_i,
 
   // KV cache address (shared K/V)
-  output wire [1:0]  kv_layer_o,
-  output wire [2:0]  kv_head_o,
-  output wire [7:0]  kv_pos_o,
-  output wire [3:0]  kv_dim_o,
+  output reg  [1:0]  kv_layer_o,
+  output reg  [2:0]  kv_head_o,
+  output reg  [7:0]  kv_pos_o,
+  output reg  [3:0]  kv_dim_o,
 
   // Output
   output reg  [7:0]  token_o,
@@ -151,16 +151,29 @@ module transformer_top (
     .done_o      (tl_done)
   );
 
-  // KV cache: pass-through from transformer_layer when active, else 0
+  // KV boundary register: splits the FSM-state -> 32-bank BRAM fanout
   reg kv_active;
-  assign k_we_o     = kv_active ? tl_k_we     : 1'b0;
-  assign k_wdata_o  = kv_active ? tl_k_wdata  : 16'd0;
-  assign v_we_o     = kv_active ? tl_v_we     : 1'b0;
-  assign v_wdata_o  = kv_active ? tl_v_wdata  : 16'd0;
-  assign kv_layer_o = kv_active ? tl_kv_layer : 2'd0;
-  assign kv_head_o  = kv_active ? tl_kv_head  : 3'd0;
-  assign kv_pos_o   = kv_active ? tl_kv_pos   : 8'd0;
-  assign kv_dim_o   = kv_active ? tl_kv_dim   : 4'd0;
+  always @(posedge clk_i) begin
+    if (rst_i) begin
+      k_we_o     <= 1'b0;
+      k_wdata_o  <= 16'd0;
+      v_we_o     <= 1'b0;
+      v_wdata_o  <= 16'd0;
+      kv_layer_o <= 2'd0;
+      kv_head_o  <= 3'd0;
+      kv_pos_o   <= 8'd0;
+      kv_dim_o   <= 4'd0;
+    end else begin
+      k_we_o     <= kv_active ? tl_k_we : 1'b0;
+      k_wdata_o  <= tl_k_wdata;
+      v_we_o     <= kv_active ? tl_v_we : 1'b0;
+      v_wdata_o  <= tl_v_wdata;
+      kv_layer_o <= tl_kv_layer;
+      kv_head_o  <= tl_kv_head;
+      kv_pos_o   <= tl_kv_pos;
+      kv_dim_o   <= tl_kv_dim;
+    end
+  end
 
   // Final LayerNorm: reads/writes act_ram[0:127]
   reg         lnf_start;
