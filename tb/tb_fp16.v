@@ -1,6 +1,6 @@
 `timescale 1ns / 1ps
 
-// Unified FP16 testbench: add, mul, mac, from_int8, to_int8, to_q167, q115_to_fp16, rsqrt, matvec
+// Unified FP16 testbench: add, mul, reduce_k4, from_int8, to_int8, to_q167, q115_to_fp16, rsqrt, matvec
 module tb_fp16;
 
   reg clk;
@@ -90,6 +90,29 @@ module tb_fp16;
   reg [31:0] tv_rsqrt [0:N_RSQRT-1];
   initial $readmemh("/home/user/red_eyes_is_all_you_need/mem/fp16_rsqrt_vectors.hex", tv_rsqrt);
 
+  // fp16_reduce_k4: streams 16 fp16 values per test, computes K=4 tree reduce
+  reg         red_clear;
+  reg         red_valid;
+  reg         red_flush;
+  reg  [15:0] red_data;
+  wire        red_done;
+  wire [15:0] red_sum;
+  fp16_reduce_k4 u_reduce (
+    .clk_i  (clk), .rst_i(rst),
+    .clear_i(red_clear), .valid_i(red_valid), .data_i(red_data),
+    .flush_i(red_flush),
+    .done_o (red_done), .sum_o(red_sum)
+  );
+
+  localparam N_REDUCE_TESTS = 10;
+  localparam N_REDUCE_VALS  = 16;
+  reg [15:0] tv_reduce_in  [0:N_REDUCE_TESTS*N_REDUCE_VALS-1];
+  reg [15:0] tv_reduce_exp [0:N_REDUCE_TESTS-1];
+  initial begin
+    $readmemh("/home/user/red_eyes_is_all_you_need/mem/fp16_reduce_k4_inputs.hex", tv_reduce_in);
+    $readmemh("/home/user/red_eyes_is_all_you_need/mem/fp16_reduce_k4_expected.hex", tv_reduce_exp);
+  end
+
   // matvec_fp16 test 1: 4x4
   localparam T1_IN = 4, T1_OUT = 4;
   reg                              mv1_start;
@@ -172,6 +195,7 @@ module tb_fp16;
     mul_valid_in = 1'b0; mul_a = 16'd0; mul_b = 16'd0;
     cvt_in = 8'd0; to_in = 16'd0; q167_in = 16'd0; q115_in = 16'd0;
     rsqrt_valid_in = 1'b0; rsqrt_in = 16'd0;
+    red_clear = 1'b0; red_valid = 1'b0; red_flush = 1'b0; red_data = 16'd0;
     mv1_start = 1'b0; mv2_start = 1'b0;
     mv1_scale = 16'h2c00; mv2_scale = 16'h2c00;
     errors = 0;
@@ -343,6 +367,36 @@ module tb_fp16;
           $fwrite(fd, "RSQRT [%0d] in=%04x got=%04x exp=%04x OK\n",
                   ti, tv_rsqrt[ti][31:16], rsqrt_out, expected);
         end
+      end
+    end
+
+    // fp16_reduce_k4: stream 16 inputs per test, check final sum
+    $display("=== fp16_reduce_k4 (%0d tests) ===", N_REDUCE_TESTS);
+    $fwrite(fd, "=== fp16_reduce_k4 (%0d tests) ===\n", N_REDUCE_TESTS);
+    for (ti = 0; ti < N_REDUCE_TESTS; ti = ti + 1) begin : red_loop
+      reg [15:0] expected;
+      integer k;
+      @(posedge clk); #1;
+      red_clear = 1'b1;
+      @(posedge clk); #1;
+      red_clear = 1'b0;
+      for (k = 0; k < N_REDUCE_VALS; k = k + 1) begin
+        @(posedge clk); #1;
+        red_valid = 1'b1;
+        red_data  = tv_reduce_in[ti*N_REDUCE_VALS + k];
+        red_flush = (k == N_REDUCE_VALS - 1) ? 1'b1 : 1'b0;
+      end
+      @(posedge clk); #1;
+      red_valid = 1'b0;
+      red_flush = 1'b0;
+      wait(red_done);
+      @(posedge clk); #1;
+      expected = tv_reduce_exp[ti];
+      if (red_sum !== expected) begin
+        $fwrite(fd, "REDUCE [%0d] got=%04x exp=%04x FAIL\n", ti, red_sum, expected);
+        errors = errors + 1;
+      end else begin
+        $fwrite(fd, "REDUCE [%0d] got=%04x exp=%04x OK\n", ti, red_sum, expected);
       end
     end
 

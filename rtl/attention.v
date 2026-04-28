@@ -2,7 +2,7 @@
 //
 // Flow: QKV matvec_fp16 -> KV store -> 8x(score, softmax, AV) -> proj matvec_fp16
 // Submodules: 2x matvec_fp16, 1x softmax (reused per head),
-//             fp16_mul_comb, fp16_add_comb, fp16_to_q167, q115_to_fp16
+//             fp16_mul, fp16_add, fp16_mul_comb, fp16_to_q167, q115_to_fp16
 //
 // Precision:
 //   Weights: int8 (from weight_store BRAM), dequanted to fp16 via scale
@@ -189,11 +189,9 @@ module attention (
   // Score computation pipeline
   reg [4:0]  sc_cnt;
   reg [7:0]  sc_pos;
-  reg [15:0] score_acc;  // fp16 accumulator
-  reg [2:0]  sc_valid;
-  reg [3:0]  sc_dim_d1;
-  reg [3:0]  sc_dim_d2;
-  reg [3:0]  sc_dim_d3;
+  reg [3:0]  sc_dim_pipe [0:1];
+  reg [1:0]  sc_bram_v;
+  reg [4:0]  sc_red_in_cnt;
 
   // AV computation pipeline
   reg [4:0]  av_cnt;
@@ -220,25 +218,38 @@ module attention (
   wire [15:0] kv_fp16_k = qkv_ram[128 + kv_idx];
   wire [15:0] kv_fp16_v = qkv_ram[256 + kv_idx];
 
-  // Score: fp16 Q*K dot product
+  // Score Q*K mul, products feed the reducer below
+  wire sc_issue = (state == S_SCORE) && (sc_cnt < 5'd16);
+
+  wire        sc_mul_v_out;
   wire [15:0] sc_mac_prod;
-  fp16_mul_comb u_sc_mul (
-    .a_i(q_head[sc_dim_d2]),
-    .b_i(k_rdata_i),
-    .prod_o(sc_mac_prod)
+  fp16_mul u_sc_mul (
+    .clk_i  (clk_i),
+    .valid_i(sc_bram_v[1]),
+    .a_i    (q_head[sc_dim_pipe[1]]),
+    .b_i    (k_rdata_i),
+    .valid_o(sc_mul_v_out),
+    .prod_o (sc_mac_prod)
   );
 
-  // Pipeline register between mul and accumulator add
-  reg [15:0] sc_prod_r;
+  // Reducer streams Q*K products in, returns dot product
+  wire sc_clear = (state == S_SCORE) && (sc_cnt == 5'd0);
+  wire sc_flush = sc_mul_v_out && (sc_red_in_cnt == 5'd15);
 
-  wire [15:0] sc_mac_sum;
-  fp16_add_comb u_sc_add (
-    .a_i(score_acc),
-    .b_i(sc_prod_r),
-    .sum_o(sc_mac_sum)
+  wire        sc_red_done;
+  wire [15:0] sc_red_sum;
+  fp16_reduce_k4 u_sc_red (
+    .clk_i  (clk_i),
+    .rst_i  (rst_i),
+    .clear_i(sc_clear),
+    .valid_i(sc_mul_v_out),
+    .data_i (sc_mac_prod),
+    .flush_i(sc_flush),
+    .done_o (sc_red_done),
+    .sum_o  (sc_red_sum)
   );
 
-  // Registered dot product, scaled by 1/sqrt(d_k) and converted to Q16.7
+  // Final dot product scaled by 1/sqrt(d_k) and converted to Q16.7
   reg [15:0] sc_dot_r;
 
   wire [15:0] sc_scaled;
@@ -326,6 +337,7 @@ module attention (
       k_we_o      <= 1'b0;
       v_we_o      <= 1'b0;
       av_bram_v   <= 2'b00;
+      sc_bram_v   <= 2'b00;
     end else begin
       done_o      <= 1'b0;
       qkv_start   <= 1'b0;
@@ -341,6 +353,13 @@ module attention (
       if (av_add_v_out) begin
         av_acc[av_dim_at_add_out] <= av_mac_sum;
       end
+
+      sc_bram_v <= {sc_bram_v[0], sc_issue};
+      sc_dim_pipe[0] <= sc_cnt[3:0];
+      sc_dim_pipe[1] <= sc_dim_pipe[0];
+
+      if (sc_clear)            sc_red_in_cnt <= 5'd0;
+      else if (sc_mul_v_out)   sc_red_in_cnt <= sc_red_in_cnt + 5'd1;
 
       case (state)
 
@@ -382,50 +401,28 @@ module attention (
             sm_start <= 1'b1;
             sc_pos   <= 8'd0;
             sc_cnt   <= 5'd0;
-            score_acc <= 16'd0;
-            sc_valid <= 3'b000;
+            sc_bram_v <= 2'b00;
           end
           kv_cnt <= kv_cnt + 9'd1;
         end
 
         // Score: fp16 Q . K[p] for p = 0..pos
-        // Issue addr at sc_cnt=0..15, data valid at sc_cnt=2..17,
-        // mul product registered at sc_valid[1], add at sc_valid[2]
+        // Issue d=0..15 over 16 cycles, then wait for u_sc_red.done_o
         S_SCORE: begin
           kv_layer_o <= layer_r;
           kv_head_o  <= head_idx;
           k_we_o     <= 1'b0;
 
-          // Dim delay line
-          sc_dim_d1 <= sc_cnt[3:0];
-          sc_dim_d2 <= sc_dim_d1;
-          sc_dim_d3 <= sc_dim_d2;
-
-          // Valid pipeline
-          sc_valid <= {sc_valid[1:0], (sc_cnt < 5'd16) ? 1'b1 : 1'b0};
-
           // Issue K cache read address for dims 0..15
           if (sc_cnt < 5'd16) begin
             kv_pos_o <= sc_pos;
             kv_dim_o <= sc_cnt[3:0];
+            sc_cnt   <= sc_cnt + 5'd1;
           end
 
-          sc_cnt <= sc_cnt + 5'd1;
-
-          // Register mul product
-          if (sc_valid[1]) begin
-            sc_prod_r <= sc_mac_prod;
-          end
-
-          // Accumulate from registered product
-          if (sc_valid[2]) begin
-            if (sc_dim_d3 == 4'd15) begin
-              sc_dot_r  <= sc_mac_sum;
-              score_acc <= 16'd0;
-              state     <= S_SCORE_SCALE;
-            end else begin
-              score_acc <= sc_mac_sum;
-            end
+          if (sc_red_done) begin
+            sc_dot_r <= sc_red_sum;
+            state    <= S_SCORE_SCALE;
           end
         end
 
@@ -445,7 +442,7 @@ module attention (
           end else begin
             sc_pos   <= sc_pos + 8'd1;
             sc_cnt   <= 5'd0;
-            sc_valid <= 3'b000;
+            sc_bram_v <= 2'b00;
             state    <= S_SCORE;
           end
         end
@@ -521,8 +518,7 @@ module attention (
             sm_start  <= 1'b1;
             sc_pos    <= 8'd0;
             sc_cnt    <= 5'd0;
-            score_acc <= 16'd0;
-            sc_valid  <= 3'b000;
+            sc_bram_v <= 2'b00;
           end
         end
 

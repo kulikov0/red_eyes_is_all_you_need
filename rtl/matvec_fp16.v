@@ -62,17 +62,23 @@ module matvec_fp16 #(
   // Combinational weight address: BRAM samples this at posedge, data appears next cycle
   assign weight_addr_o = group * (K * IN_DIM) + k * IN_DIM + col;
 
-  // Dequant valid: 1-cycle delay of state==S_COMPUTE to align with BRAM output
-  reg state_compute_r;
+  // Boundary register on weight_data_i breaks the long route from weight_store
+  // BRAM through tensor_sel mux into our DSP. fp16_from_int8 runs on the
+  // registered byte, adding one cycle of latency to the whole compute pipeline
+  reg signed [7:0] weight_data_r;
+  always @(posedge clk_i) weight_data_r <= weight_data_i;
+
+  // Dequant valid: 2-cycle delay of state==S_COMPUTE matches the boundary reg
+  reg [1:0] state_compute_r;
   always @(posedge clk_i) begin
-    if (rst_i) state_compute_r <= 1'b0;
-    else       state_compute_r <= (state == S_COMPUTE);
+    if (rst_i) state_compute_r <= 2'b00;
+    else       state_compute_r <= {state_compute_r[0], (state == S_COMPUTE)};
   end
-  wire dq_valid_in = state_compute_r;
+  wire dq_valid_in = state_compute_r[1];
 
   // Dequant: int8 weight -> fp16 -> multiply by scale
   wire [15:0] w_fp16;
-  fp16_from_int8 u_from (.val_i(weight_data_i), .fp16_o(w_fp16));
+  fp16_from_int8 u_from (.val_i(weight_data_r), .fp16_o(w_fp16));
 
   wire        dq_valid_out;
   wire [15:0] w_dequant;
@@ -86,18 +92,15 @@ module matvec_fp16 #(
   );
 
   // Metadata shift registers track (col, k) through each pipeline stage
-  // col needed at u_mac input (3 cycles after BRAM sample = 3 stages from col)
-  // k needed at u_add input (5 cycles from k sample) and acc writeback (8 cycles)
-  reg [COL_W-1:0] col_pipe [0:2];
-  reg [K_LOG-1:0] k_pipe   [0:7];
+  reg [COL_W-1:0] col_pipe [0:3];
+  reg [K_LOG-1:0] k_pipe   [0:8];
   integer i;
   always @(posedge clk_i) begin
     col_pipe[0] <= col;
-    col_pipe[1] <= col_pipe[0];
-    col_pipe[2] <= col_pipe[1];
+    for (i = 1; i < 4; i = i + 1) col_pipe[i] <= col_pipe[i-1];
 
     k_pipe[0] <= k;
-    for (i = 1; i < 8; i = i + 1) k_pipe[i] <= k_pipe[i-1];
+    for (i = 1; i < 9; i = i + 1) k_pipe[i] <= k_pipe[i-1];
   end
 
   // MAC multiply: dequanted weight * matching input element
@@ -107,19 +110,18 @@ module matvec_fp16 #(
     .clk_i(clk_i),
     .valid_i(dq_valid_out),
     .a_i(w_dequant),
-    .b_i(in_snap[col_pipe[2]]),
+    .b_i(in_snap[col_pipe[3]]),
     .valid_o(mac_valid_out),
     .prod_o(mac_prod)
   );
 
-  // Accumulator add: feeds acc[k] back through 3-cycle fp16_add
-  // K=4 row interleaving covers the 3-cycle feedback with 1 cycle to spare
+  // Accumulator add: K=4 row interleaving covers the add feedback
   wire        add_valid_out;
   wire [15:0] add_sum;
   fp16_add u_add (
     .clk_i(clk_i),
     .valid_i(mac_valid_out),
-    .a_i(acc[k_pipe[4]]),
+    .a_i(acc[k_pipe[5]]),
     .b_i(mac_prod),
     .valid_o(add_valid_out),
     .sum_o(add_sum)
@@ -144,7 +146,7 @@ module matvec_fp16 #(
 
       // Write back accumulator when add output is valid
       if (add_valid_out) begin
-        acc[k_pipe[7]] <= add_sum;
+        acc[k_pipe[8]] <= add_sum;
       end
 
       case (state)
@@ -189,9 +191,9 @@ module matvec_fp16 #(
           end
         end
 
-        // Wait for last in-flight MACs to propagate through BRAM+mul+mul+add (8 cycles)
+        // Wait for last in-flight MACs to propagate through the pipeline
         S_DRAIN: begin
-          if (drain_cnt == 4'd7) begin
+          if (drain_cnt == 4'd8) begin
             state   <= S_WRITE;
             write_k <= 0;
           end else begin

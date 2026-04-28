@@ -273,6 +273,17 @@ def fp16_mac(acc, a, b):
     return fp16_add(acc, fp16_mul(a, b))
 
 
+# K=4 interleaved partial sums + balanced tree reduce
+# Matches RTL hardware that uses 4 round-robin slots over a pipelined fp16_add
+def fp16_reduce_k4(values):
+    p = [0, 0, 0, 0]
+    for i, v in enumerate(values):
+        p[i & 3] = fp16_add(p[i & 3], v)
+    s01 = fp16_add(p[0], p[1])
+    s23 = fp16_add(p[2], p[3])
+    return fp16_add(s01, s23)
+
+
 def fp16_negate(bits):
     return bits ^ 0x8000
 
@@ -370,15 +381,12 @@ def fp16_rsqrt_lut(bits, lut):
 def rtl_layernorm_fp16(x_fp16, gamma_fp16, beta_fp16, isqrt_lut):
     n = len(x_fp16)
     inv_n = fp16_from_float(1.0 / n)
-    total = 0
-    for v in x_fp16:
-        total = fp16_add(total, v)
+    total = fp16_reduce_k4(x_fp16)
     mean = fp16_mul(total, inv_n)
     neg_mean = fp16_negate(mean)
-    var_acc = 0
-    for v in x_fp16:
-        diff = fp16_add(v, neg_mean)
-        var_acc = fp16_mac(var_acc, diff, diff)
+    diffs = [fp16_add(v, neg_mean) for v in x_fp16]
+    sq = [fp16_mul(d, d) for d in diffs]
+    var_acc = fp16_reduce_k4(sq)
     var = fp16_mul(var_acc, inv_n)
     inv_std = fp16_rsqrt_lut(var, isqrt_lut)
     out = []
@@ -687,14 +695,12 @@ def rtl_attention_fp16(x_fp16, layer, pos, kv_cache, qkv_w, proj_w,
     for h in range(N_HEADS):
         q_h = [q_fp16[h * HEAD_DIM + d] for d in range(HEAD_DIM)]
 
-        # Score: fp16 dot product + 1/sqrt(d_k) scaling -> Q16.7 for softmax
+        # Score: K=4 reduce of Q*K products, scale by 1/sqrt(d_k)
         scores_q167 = []
         for p in range(pos + 1):
-            acc = 0x0000
-            for d in range(HEAD_DIM):
-                k_val = kv_cache.get((layer, 0, h, p, d), 0x0000)
-                prod = fp16_mul(q_h[d], k_val)
-                acc = fp16_add(acc, prod)
+            products = [fp16_mul(q_h[d], kv_cache.get((layer, 0, h, p, d), 0x0000))
+                        for d in range(HEAD_DIM)]
+            acc = fp16_reduce_k4(products)
             score_scaled = fp16_mul(acc, INV_SQRT_DK)
             scores_q167.append(_q167_to_signed(fp16_to_q167(score_scaled)))
 

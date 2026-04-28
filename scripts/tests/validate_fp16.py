@@ -2,7 +2,7 @@
 Validate tb_fp16 xsim output against bit-exact rtl models
 
 Parses logs/tb_fp16.log (unified testbench) for all fp16 primitives:
-add, mul, mac, from_int8, to_int8, to_q167, q115_to_fp16, rsqrt, matvec_fp16
+add, mul, reduce_k4, from_int8, to_int8, to_q167, q115_to_fp16, rsqrt, matvec_fp16
 """
 
 import re
@@ -12,7 +12,7 @@ import math
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from rtl_ops import (
-    fp16_add, fp16_mul, fp16_mac,
+    fp16_add, fp16_mul, fp16_reduce_k4,
     fp16_from_int, fp16_from_float, fp16_to_float, fp16_to_q167,
     q115_to_fp16 as rtl_q115_to_fp16, fp16_rsqrt_lut,
     load_lut16, to_signed8,
@@ -177,38 +177,34 @@ def parse_and_validate():
         total_errors = print_section("fp16_mul", mul_results, total_errors)
         total_count += len(mul_results)
 
-    # fp16_mac
-    mac_pat = re.compile(r"MAC \[(\d+)\] got=([0-9a-f]{4})")
-    mac_results = []
-    pairs_path = os.path.join(MEM, "fp16_mac_pairs.hex")
-    if os.path.exists(pairs_path):
-        pairs = []
-        with open(pairs_path) as pf:
+    # fp16_reduce_k4
+    red_pat = re.compile(r"REDUCE \[(\d+)\] got=([0-9a-f]{4})")
+    red_results = []
+    inputs_path = os.path.join(MEM, "fp16_reduce_k4_inputs.hex")
+    N_RED = 16
+    if os.path.exists(inputs_path):
+        red_in = []
+        with open(inputs_path) as pf:
             for pline in pf:
                 s = pline.strip()
                 if s:
-                    val = int(s, 16)
-                    pairs.append(((val >> 16) & 0xFFFF, val & 0xFFFF))
+                    red_in.append(int(s, 16))
 
         for line in lines:
-            m = mac_pat.search(line)
+            m = red_pat.search(line)
             if m:
                 idx = int(m.group(1))
                 got = int(m.group(2), 16)
-                acc = 0x0000
-                acc_f64 = 0.0
-                for j in range(16):
-                    a_bits = pairs[idx*16+j][0]
-                    b_bits = pairs[idx*16+j][1]
-                    acc = fp16_mac(acc, a_bits, b_bits)
-                    acc_f64 += fp16_to_float(a_bits) * fp16_to_float(b_bits)
-                mac_results.append({"idx": idx, "got": got,
-                                    "rtl": acc, "ideal": acc_f64})
+                vals = red_in[idx*N_RED:(idx+1)*N_RED]
+                rtl = fp16_reduce_k4(vals)
+                ideal = sum(fp16_to_float(v) for v in vals)
+                red_results.append({"idx": idx, "got": got,
+                                    "rtl": rtl, "ideal": ideal})
 
-    if mac_results:
-        print(f"Test: fp16_mac ({len(mac_results)} dot-products)")
-        total_errors = print_section("fp16_mac", mac_results, total_errors)
-        total_count += len(mac_results)
+    if red_results:
+        print(f"Test: fp16_reduce_k4 ({len(red_results)} reductions)")
+        total_errors = print_section("fp16_reduce_k4", red_results, total_errors)
+        total_count += len(red_results)
 
     # fp16_from_int8
     from_pat = re.compile(r"FROM \[(\d+)\] in=([0-9a-f]{2}) got=([0-9a-f]{4})")

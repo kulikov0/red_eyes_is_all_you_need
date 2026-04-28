@@ -52,15 +52,23 @@ module embedding #(
 
   reg [15:0] tok_scale_r;
 
+  // Boundary register on w_data_i breaks the long route from weight_store
+  // BRAM through the tensor_sel mux into our DSP. Adds one cycle of latency
+  reg signed [7:0] w_data_r;
+  always @(posedge clk_i) w_data_r <= w_data_i;
+
+  wire [7:0] prev2 = idx - 8'd2;
+
   // Combinational int8 -> fp16 conversion
   wire [15:0] tok_fp16;
-  fp16_from_int8 u_tok_cvt (.val_i(tok_buf[prev[6:0]]), .fp16_o(tok_fp16));
+  fp16_from_int8 u_tok_cvt (.val_i(tok_buf[prev2[6:0]]), .fp16_o(tok_fp16));
 
   wire [15:0] pos_fp16;
-  fp16_from_int8 u_pos_cvt (.val_i(w_data_i), .fp16_o(pos_fp16));
+  fp16_from_int8 u_pos_cvt (.val_i(w_data_r), .fp16_o(pos_fp16));
 
-  // Feed pipeline only while consuming pos reads in S_READ_POS
-  wire feed_valid = (state == S_READ_POS) && (idx >= 8'd1) && (idx <= DIM[7:0]);
+  // Feed pipeline only while consuming pos reads in S_READ_POS, shifted by
+  // one cycle to wait for w_data_r to settle
+  wire feed_valid = (state == S_READ_POS) && (idx >= 8'd2) && (idx <= DIM[7:0] + 8'd1);
 
   // tok dequant: fp16 * tok_scale
   wire        tok_mv_out;
@@ -98,11 +106,11 @@ module embedding #(
     .sum_o(sum_fp16)
   );
 
-  // Track write address through 5-cycle pipeline: mul (2) + add (3)
+  // Track write address through the dequant pipeline
   reg [$clog2(DIM)-1:0] feed_addr_pipe [0:4];
   integer i;
   always @(posedge clk_i) begin
-    feed_addr_pipe[0] <= prev[$clog2(DIM)-1:0];
+    feed_addr_pipe[0] <= prev2[$clog2(DIM)-1:0];
     for (i = 1; i < 5; i = i + 1) feed_addr_pipe[i] <= feed_addr_pipe[i-1];
   end
 
@@ -134,27 +142,26 @@ module embedding #(
           end
         end
 
-        // Read 128 bytes of tok_emb[token_id] into tok_buf
+        // Read 128 bytes of tok_emb[token_id] into tok_buf via w_data_r
         S_READ_TOK: begin
           if (idx == 8'd1)
             tok_scale_r <= w_scale_i;
           if (idx < DIM[7:0] - 8'd1) begin
             w_addr_o <= {1'b0, tok_base} + {8'd0, idx} + 16'd1;
           end
-          if (idx > 0) begin
-            tok_buf[prev[6:0]] <= $signed(w_data_i);
+          if (idx > 1) begin
+            tok_buf[prev2[6:0]] <= $signed(w_data_r);
           end
           idx <= idx + 8'd1;
-          if (idx == DIM[7:0]) begin
+          if (idx == DIM[7:0] + 8'd1) begin
             state    <= S_READ_POS;
             idx      <= 8'd0;
-            // Pre-issue first pos_emb address
             w_sel_o  <= 6'd1;
             w_addr_o <= {1'b0, pos_base};
           end
         end
 
-        // For each idx in [1, DIM]: feed fp16 dequant pipeline, pipeline drains for 5 more cycles
+        // Feed fp16 dequant pipeline, drain afterwards
         S_READ_POS: begin
           if (idx < DIM[7:0] - 8'd1) begin
             w_addr_o <= {1'b0, pos_base} + {8'd0, idx} + 16'd1;
@@ -167,7 +174,7 @@ module embedding #(
           end
 
           idx <= idx + 8'd1;
-          if (idx == DIM[7:0] + 8'd5) begin
+          if (idx == DIM[7:0] + 8'd6) begin
             state <= S_DONE;
           end
         end

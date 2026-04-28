@@ -38,8 +38,8 @@ module top (
 
   MMCME2_BASE #(
     .CLKIN1_PERIOD (5.0),
-    .CLKFBOUT_MULT_F (6.0),
-    .CLKOUT0_DIVIDE_F(25.0)
+    .CLKFBOUT_MULT_F (6.5),
+    .CLKOUT0_DIVIDE_F(20.0)
   ) mmcm_inst (
     .CLKIN1  (clk_200),
     .RST     (1'b0),
@@ -67,7 +67,7 @@ module top (
   wire [7:0] rx_data;
   wire       rx_valid;
 
-  uart_rx #(.CLK_FREQ(48_000_000), .BAUD(115_200)) u_rx (
+  uart_rx #(.CLK_FREQ(65_000_000), .BAUD(115_200)) u_rx (
     .clk_i  (clk),
     .rst_i  (rst),
     .rx_i   (uart_rx_i),
@@ -80,7 +80,7 @@ module top (
   reg        tx_start;
   wire       tx_busy;
 
-  uart_tx #(.CLK_FREQ(48_000_000), .BAUD(115_200)) u_tx (
+  uart_tx #(.CLK_FREQ(65_000_000), .BAUD(115_200)) u_tx (
     .clk_i  (clk),
     .rst_i  (rst),
     .data_i (tx_data),
@@ -278,8 +278,8 @@ module top (
       rx_blink      <= 0;
       tx_blink      <= 0;
     end else begin
-      // Heartbeat ~0.33s toggle at 48 MHz
-      if (heartbeat_cnt == 24'd16_000_000) begin
+      // Heartbeat ~0.33s toggle at 65 MHz
+      if (heartbeat_cnt == 24'd21_666_666) begin
         heartbeat_cnt <= 0;
         heartbeat_r   <= ~heartbeat_r;
       end else begin

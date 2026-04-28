@@ -194,41 +194,6 @@ def gen_fp16_to_int8_vectors():
       f.write(f'{fp16_bits:04x}{int8_val:02x}\n')
   print(f'Wrote {len(vectors)} vectors to {path}')
 
-"""
-Generate MAC test vectors: pairs file + expected file
-Pairs: {a[15:0], b[15:0]} = 32 bits, 16 per test
-Expected: {result[15:0]} = 16 bits, 1 per test
-"""
-def gen_fp16_mac_vectors():
-  rng = random.Random(45)
-
-  # Helper: build fp16 bits list from floats
-  def to_fp16_list(floats):
-    return [float_to_fp16(f) for f in floats]
-
-  tests = []
-  tests.append((to_fp16_list([1.0] * 16), to_fp16_list([1.0] * 16)))
-  tests.append((to_fp16_list([1.0, -1.0] * 8), to_fp16_list([2.0, 2.0] * 8)))
-
-  for _ in range(3):
-    a = to_fp16_list([rng.uniform(-10, 10) for _ in range(16)])
-    b = to_fp16_list([rng.uniform(-10, 10) for _ in range(16)])
-    tests.append((a, b))
-
-  pairs_path = os.path.join(MEM_DIR, 'fp16_mac_pairs.hex')
-  exp_path = os.path.join(MEM_DIR, 'fp16_mac_expected.hex')
-  with open(pairs_path, 'w') as fp, open(exp_path, 'w') as fe:
-    for a_bits, b_bits in tests:
-      for j in range(16):
-        fp.write(f'{a_bits[j]:04x}{b_bits[j]:04x}\n')
-      # Accumulate using bit-exact fp16_mul + fp16_add
-      acc = 0x0000
-      for j in range(16):
-        prod = fp16_mul(a_bits[j], b_bits[j])
-        acc = fp16_add(acc, prod)
-      fe.write(f'{acc:04x}\n')
-  print(f'Wrote {len(tests)} MAC tests to {pairs_path} + {exp_path}')
-
 # Generate fp16_to_q167 vectors: {fp16[15:0], expected[23:0]} = 40 bits
 def gen_fp16_to_q167_vectors():
   test_values = [
@@ -341,12 +306,39 @@ def gen_fp16_rsqrt_vectors():
       f.write(f'{in_bits:04x}{exp_bits:04x}\n')
   print(f'Wrote {len(vectors)} vectors to {path}')
 
+def gen_fp16_reduce_k4_vectors():
+  rng = random.Random(73)
+  N = 16
+  tests = []
+  tests.append([float_to_fp16(1.0)] * N)
+  tests.append([float_to_fp16(v) for v in [1.0, -1.0] * 8])
+  tests.append([float_to_fp16(0.0)] * N)
+  tests.append([float_to_fp16(v) for v in range(N)])
+  for _ in range(6):
+    tests.append([float_to_fp16(rng.uniform(-10, 10)) for _ in range(N)])
+
+  inputs_path  = os.path.join(MEM_DIR, 'fp16_reduce_k4_inputs.hex')
+  expected_path = os.path.join(MEM_DIR, 'fp16_reduce_k4_expected.hex')
+  with open(inputs_path, 'w') as fi, open(expected_path, 'w') as fe:
+    for vals in tests:
+      for v in vals:
+        fi.write(f'{v:04x}\n')
+      p = [0, 0, 0, 0]
+      for i, v in enumerate(vals):
+        p[i & 3] = fp16_add(p[i & 3], v)
+      s01 = fp16_add(p[0], p[1])
+      s23 = fp16_add(p[2], p[3])
+      total = fp16_add(s01, s23)
+      fe.write(f'{total:04x}\n')
+  print(f'Wrote {len(tests)} reduce_k4 tests ({N} inputs each) to {inputs_path} + {expected_path}')
+
+
 if __name__ == '__main__':
   gen_fp16_add_vectors()
   gen_fp16_mul_vectors()
   gen_fp16_from_int8_vectors()
   gen_fp16_to_int8_vectors()
-  gen_fp16_mac_vectors()
   gen_fp16_to_q167_vectors()
   gen_q115_to_fp16_vectors()
   gen_fp16_rsqrt_vectors()
+  gen_fp16_reduce_k4_vectors()
