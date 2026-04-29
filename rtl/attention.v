@@ -69,17 +69,25 @@ module attention (
                    S_QKV         = 4'd1,
                    S_KV_STORE    = 4'd2,
                    S_SCORE       = 4'd3,
-                   S_SCORE_MUL   = 4'd4,
-                   S_SCORE_SCALE = 4'd5,
-                   S_SCORE_PAD   = 4'd6,
-                   S_SM_WAIT     = 4'd7,
-                   S_AV          = 4'd8,
-                   S_AV_STORE    = 4'd9,
-                   S_NEXT_HEAD   = 4'd10,
-                   S_PROJ        = 4'd11,
-                   S_DONE        = 4'd12;
+                   S_SCORE_PAD   = 4'd4,
+                   S_SM_WAIT     = 4'd5,
+                   S_AV          = 4'd6,
+                   S_AV_STORE    = 4'd7,
+                   S_NEXT_HEAD   = 4'd8,
+                   S_PROJ        = 4'd9,
+                   S_DONE        = 4'd10;
 
   reg [3:0] state;
+
+  // Cap sub-FSM runs in parallel with S_SCORE issue side
+  localparam [1:0] C_IDLE = 2'd0,
+                   C_WAIT = 2'd1,
+                   C_MUL  = 2'd2,
+                   C_FEED = 2'd3;
+  reg [1:0] cap_state;
+  reg [7:0] sc_pos_cap;
+  reg       issue_done;
+  reg       cap_done;
 
   // Latched inputs
   reg [1:0] layer_r;
@@ -231,22 +239,51 @@ module attention (
     .prod_o (sc_mac_prod)
   );
 
-  // Reducer streams Q*K products in, returns dot product
-  wire sc_clear = (state == S_SCORE) && (sc_cnt == 5'd0);
-  wire sc_flush = sc_mul_v_out && (sc_red_in_cnt == 5'd15);
+  // Ping-pong reducers: A drains pos N while B accumulates pos N+1
+  reg red_issue_sel;
+  reg red_cap_sel;
+  reg mul_pos_sel;
 
-  wire        sc_red_done;
-  wire [15:0] sc_red_sum;
-  fp16_reduce_k4 u_sc_red (
+  // Hold clear for 4 cycles so it latches when the reducer reaches S_IDLE
+  wire sc_clear_pulse = (state == S_SCORE) && (sc_cnt < 5'd4);
+  wire sc_clear_a     = sc_clear_pulse && !red_issue_sel;
+  wire sc_clear_b     = sc_clear_pulse &&  red_issue_sel;
+
+  wire sc_red_a_valid_i = sc_mul_v_out && !mul_pos_sel;
+  wire sc_red_b_valid_i = sc_mul_v_out &&  mul_pos_sel;
+
+  wire sc_red_a_flush_i = sc_red_a_valid_i && (sc_red_in_cnt == 5'd15);
+  wire sc_red_b_flush_i = sc_red_b_valid_i && (sc_red_in_cnt == 5'd15);
+
+  wire        sc_red_a_done;
+  wire [15:0] sc_red_a_sum;
+  fp16_reduce_k4 u_sc_red_a (
     .clk_i  (clk_i),
     .rst_i  (rst_i),
-    .clear_i(sc_clear),
-    .valid_i(sc_mul_v_out),
+    .clear_i(sc_clear_a),
+    .valid_i(sc_red_a_valid_i),
     .data_i (sc_mac_prod),
-    .flush_i(sc_flush),
-    .done_o (sc_red_done),
-    .sum_o  (sc_red_sum)
+    .flush_i(sc_red_a_flush_i),
+    .done_o (sc_red_a_done),
+    .sum_o  (sc_red_a_sum)
   );
+
+  wire        sc_red_b_done;
+  wire [15:0] sc_red_b_sum;
+  fp16_reduce_k4 u_sc_red_b (
+    .clk_i  (clk_i),
+    .rst_i  (rst_i),
+    .clear_i(sc_clear_b),
+    .valid_i(sc_red_b_valid_i),
+    .data_i (sc_mac_prod),
+    .flush_i(sc_red_b_flush_i),
+    .done_o (sc_red_b_done),
+    .sum_o  (sc_red_b_sum)
+  );
+
+  // Active capture done/sum
+  wire        sc_red_done = !red_cap_sel ? sc_red_a_done : sc_red_b_done;
+  wire [15:0] sc_red_sum  = !red_cap_sel ? sc_red_a_sum  : sc_red_b_sum;
 
   // Final dot product scaled by 1/sqrt(d_k) and converted to Q16.7. Pipeline
   // register sc_scaled_r splits the long fp16_mul_comb -> fp16_to_q167 chain
@@ -365,8 +402,40 @@ module attention (
       sc_dim_pipe[1] <= sc_dim_pipe[0];
       sc_dim_pipe[2] <= sc_dim_pipe[1];
 
-      if (sc_clear)            sc_red_in_cnt <= 5'd0;
-      else if (sc_mul_v_out)   sc_red_in_cnt <= sc_red_in_cnt + 5'd1;
+      // sc_red_in_cnt wraps every 16 mul outputs, toggling mul_pos_sel
+      if (sc_mul_v_out) begin
+        if (sc_red_in_cnt == 5'd15) begin
+          sc_red_in_cnt <= 5'd0;
+          mul_pos_sel   <= ~mul_pos_sel;
+        end else begin
+          sc_red_in_cnt <= sc_red_in_cnt + 5'd1;
+        end
+      end
+
+      if (state == S_SCORE) begin
+        case (cap_state)
+          C_WAIT: begin
+            if (sc_red_done && !cap_done) begin
+              sc_dot_r  <= sc_red_sum;
+              cap_state <= C_MUL;
+            end
+          end
+          C_MUL: cap_state <= C_FEED;
+          C_FEED: begin
+            sm_in_valid <= 1'b1;
+            sm_in_data  <= sc_q167;
+            red_cap_sel <= ~red_cap_sel;
+            if (sc_pos_cap == pos_r) begin
+              cap_done  <= 1'b1;
+              cap_state <= C_IDLE;
+            end else begin
+              sc_pos_cap <= sc_pos_cap + 8'd1;
+              cap_state  <= C_WAIT;
+            end
+          end
+          default: ;
+        endcase
+      end
 
       case (state)
 
@@ -403,46 +472,48 @@ module attention (
           end
 
           if (kv_cnt == 9'd255) begin
-            state    <= S_SCORE;
-            head_idx <= 3'd0;
-            sm_start <= 1'b1;
-            sc_pos   <= 8'd0;
-            sc_cnt   <= 5'd0;
-            sc_bram_v <= 3'b000;
+            state         <= S_SCORE;
+            head_idx      <= 3'd0;
+            sm_start      <= 1'b1;
+            sc_pos        <= 8'd0;
+            sc_pos_cap    <= 8'd0;
+            sc_cnt        <= 5'd0;
+            sc_bram_v     <= 3'b000;
+            sc_red_in_cnt <= 5'd0;
+            red_issue_sel <= 1'b0;
+            red_cap_sel   <= 1'b0;
+            mul_pos_sel   <= 1'b0;
+            issue_done    <= 1'b0;
+            cap_done      <= 1'b0;
+            cap_state     <= C_WAIT;
           end
           kv_cnt <= kv_cnt + 9'd1;
         end
 
-        // Score: fp16 Q . K[p] for p = 0..pos
-        // Issue d=0..15 over 16 cycles, then wait for u_sc_red.done_o
+        // Score: fp16 Q . K[p] for p = 0..pos. Issue advances every 16
+        // cycles; cap sub-FSM above captures dones and feeds softmax
         S_SCORE: begin
           kv_layer_o <= layer_r;
           kv_head_o  <= head_idx;
           k_we_o     <= 1'b0;
 
-          // Issue K cache read address for dims 0..15
-          if (sc_cnt < 5'd16) begin
+          if (!issue_done && sc_cnt < 5'd16) begin
             kv_pos_o <= sc_pos;
             kv_dim_o <= sc_cnt[3:0];
             sc_cnt   <= sc_cnt + 5'd1;
           end
 
-          if (sc_red_done) begin
-            sc_dot_r <= sc_red_sum;
-            state    <= S_SCORE_MUL;
+          if (!issue_done && sc_cnt == 5'd15) begin
+            if (sc_pos == pos_r) begin
+              issue_done <= 1'b1;
+            end else begin
+              sc_pos        <= sc_pos + 8'd1;
+              sc_cnt        <= 5'd0;
+              red_issue_sel <= ~red_issue_sel;
+            end
           end
-        end
 
-        S_SCORE_MUL: begin
-          state <= S_SCORE_SCALE;
-        end
-
-        // Scale registered dot product and feed to softmax
-        S_SCORE_SCALE: begin
-          sm_in_valid <= 1'b1;
-          sm_in_data  <= sc_q167;
-
-          if (sc_pos == pos_r) begin
+          if (issue_done && cap_done) begin
             if (pos_r == 8'd255) begin
               state      <= S_SM_WAIT;
               sm_out_cnt <= 9'd0;
@@ -450,11 +521,6 @@ module attention (
               state   <= S_SCORE_PAD;
               pad_cnt <= {1'b0, pos_r} + 9'd1;
             end
-          end else begin
-            sc_pos   <= sc_pos + 8'd1;
-            sc_cnt   <= 5'd0;
-            sc_bram_v <= 3'b000;
-            state    <= S_SCORE;
           end
         end
 
@@ -524,12 +590,20 @@ module attention (
             state      <= S_PROJ;
             proj_start <= 1'b1;
           end else begin
-            head_idx  <= head_idx + 3'd1;
-            state     <= S_SCORE;
-            sm_start  <= 1'b1;
-            sc_pos    <= 8'd0;
-            sc_cnt    <= 5'd0;
-            sc_bram_v <= 3'b000;
+            head_idx      <= head_idx + 3'd1;
+            state         <= S_SCORE;
+            sm_start      <= 1'b1;
+            sc_pos        <= 8'd0;
+            sc_pos_cap    <= 8'd0;
+            sc_cnt        <= 5'd0;
+            sc_bram_v     <= 3'b000;
+            sc_red_in_cnt <= 5'd0;
+            red_issue_sel <= 1'b0;
+            red_cap_sel   <= 1'b0;
+            mul_pos_sel   <= 1'b0;
+            issue_done    <= 1'b0;
+            cap_done      <= 1'b0;
+            cap_state     <= C_WAIT;
           end
         end
 
