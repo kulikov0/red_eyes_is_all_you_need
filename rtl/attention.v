@@ -205,6 +205,7 @@ module attention (
   reg [7:0]  av_pos;
   reg [2:0]  av_bram_v;
   reg [3:0]  av_dim_pipe [0:7];
+  reg        av_issue_done;
 
   // Softmax output capture counter
   reg [8:0] sm_out_cnt;
@@ -307,9 +308,17 @@ module attention (
   );
 
   // AV: Q1.15 -> fp16, then fp16 * V, accumulated into av_acc[d]
+  // a_i pipeline depth matches b_i so av_pos can advance mid-stream
+  reg [7:0]  av_pos_r1;
+  reg [15:0] attn_val_r;
+  always @(posedge clk_i) begin
+    av_pos_r1  <= av_pos;
+    attn_val_r <= attn_buf[av_pos_r1];
+  end
+
   wire [15:0] av_attn_fp16;
   q115_to_fp16 u_av_cvt (
-    .val_i(attn_buf[av_pos]),
+    .val_i(attn_val_r),
     .fp16_o(av_attn_fp16)
   );
 
@@ -371,16 +380,17 @@ module attention (
 
   always @(posedge clk_i) begin
     if (rst_i) begin
-      state       <= S_IDLE;
-      done_o      <= 1'b0;
-      qkv_start   <= 1'b0;
-      proj_start  <= 1'b0;
-      sm_start    <= 1'b0;
-      sm_in_valid <= 1'b0;
-      k_we_o      <= 1'b0;
-      v_we_o      <= 1'b0;
-      av_bram_v   <= 3'b000;
-      sc_bram_v   <= 3'b000;
+      state         <= S_IDLE;
+      done_o        <= 1'b0;
+      qkv_start     <= 1'b0;
+      proj_start    <= 1'b0;
+      sm_start      <= 1'b0;
+      sm_in_valid   <= 1'b0;
+      k_we_o        <= 1'b0;
+      v_we_o        <= 1'b0;
+      av_bram_v     <= 3'b000;
+      sc_bram_v     <= 3'b000;
+      av_issue_done <= 1'b0;
     end else begin
       done_o      <= 1'b0;
       qkv_start   <= 1'b0;
@@ -542,10 +552,11 @@ module attention (
             sm_out_cnt <= sm_out_cnt + 9'd1;
           end
           if (sm_done) begin
-            state     <= S_AV;
-            av_pos    <= 8'd0;
-            av_cnt    <= 5'd0;
-            av_bram_v <= 3'b000;
+            state         <= S_AV;
+            av_pos        <= 8'd0;
+            av_cnt        <= 5'd0;
+            av_bram_v     <= 3'b000;
+            av_issue_done <= 1'b0;
             for (j = 0; j < 16; j = j + 1) begin
               av_acc[j] <= 16'd0;
             end
@@ -553,28 +564,35 @@ module attention (
         end
 
         // AV: av_acc[d] += attn_fp16[p] * V_fp16[p][d] for d=0..15, p=0..pos
+        // Position advances at issue completion (av_cnt==15); next position's
+        // reads start immediately while previous position's adds drain
         S_AV: begin
           kv_layer_o <= layer_r;
           kv_head_o  <= head_idx;
           v_we_o     <= 1'b0;
 
-          // Issue V cache read address for dims 0..15
-          if (av_cnt < 5'd16) begin
-            kv_pos_o <= av_pos;
-            kv_dim_o <= av_cnt[3:0];
+          if (!av_issue_done) begin
+            if (av_cnt < 5'd16) begin
+              kv_pos_o <= av_pos;
+              kv_dim_o <= av_cnt[3:0];
+            end
+
+            if (av_cnt == 5'd15) begin
+              if (av_pos == pos_r) begin
+                av_issue_done <= 1'b1;
+                av_cnt        <= av_cnt + 5'd1;
+              end else begin
+                av_pos <= av_pos + 8'd1;
+                av_cnt <= 5'd0;
+              end
+            end else begin
+              av_cnt <= av_cnt + 5'd1;
+            end
           end
 
-          av_cnt <= av_cnt + 5'd1;
-
-          // Position transition fires when last add output has been written
-          if (av_add_v_out && av_dim_at_add_out == 4'd15) begin
-            if (av_pos == pos_r) begin
-              state <= S_AV_STORE;
-            end else begin
-              av_pos    <= av_pos + 8'd1;
-              av_cnt    <= 5'd0;
-              av_bram_v <= 3'b000;
-            end
+          // Exit when last position's last add output has been written
+          if (av_issue_done && av_add_v_out && av_dim_at_add_out == 4'd15) begin
+            state <= S_AV_STORE;
           end
         end
 
