@@ -218,8 +218,8 @@ module attention (
   // Score computation pipeline
   reg [4:0]  sc_cnt;
   reg [7:0]  sc_pos;
-  reg [3:0]  sc_dim_pipe [0:2];
-  reg [2:0]  sc_bram_v;
+  reg [3:0]  sc_dim_pipe [0:3];
+  reg [3:0]  sc_bram_v;
   reg [4:0]  sc_red_in_cnt;
 
   // AV computation pipeline
@@ -251,13 +251,18 @@ module attention (
   // Score Q*K mul, products feed the reducer below
   wire sc_issue = (score_state == SC_SCORE) && (sc_cnt < 5'd16);
 
+  // Register k_rdata before the score multiplier to break the K cache BRAM
+  // clk-to-out -> DSP B chain
+  reg [15:0] sc_k_rdata_r;
+  always @(posedge clk_i) sc_k_rdata_r <= k_rdata_i;
+
   wire        sc_mul_v_out;
   wire [15:0] sc_mac_prod;
   fp16_mul u_sc_mul (
     .clk_i  (clk_i),
-    .valid_i(sc_bram_v[2]),
-    .a_i    (q_head[sc_dim_pipe[2]]),
-    .b_i    (k_rdata_i),
+    .valid_i(sc_bram_v[3]),
+    .a_i    (q_head[sc_dim_pipe[3]]),
+    .b_i    (sc_k_rdata_r),
     .valid_o(sc_mul_v_out),
     .prod_o (sc_mac_prod)
   );
@@ -267,8 +272,10 @@ module attention (
   reg red_cap_sel;
   reg mul_pos_sel;
 
-  // Hold clear for 4 cycles so it latches when the reducer reaches S_IDLE
-  wire sc_clear_pulse = (score_state == SC_SCORE) && (sc_cnt < 5'd4);
+  // Hold clear for 5 cycles so it latches when the reducer reaches S_IDLE.
+  // Window must cover the cycle the inactive reducer drops back to IDLE,
+  // which is shifted later by the sc_k_rdata_r register on the mul b_i path
+  wire sc_clear_pulse = (score_state == SC_SCORE) && (sc_cnt < 5'd5);
   wire sc_clear_a     = sc_clear_pulse && !red_issue_sel;
   wire sc_clear_b     = sc_clear_pulse &&  red_issue_sel;
 
@@ -414,7 +421,7 @@ module attention (
       k_we_o         <= 1'b0;
       v_we_o         <= 1'b0;
       av_bram_v      <= 3'b000;
-      sc_bram_v      <= 3'b000;
+      sc_bram_v      <= 4'b0000;
       av_issue_done  <= 1'b0;
       score_head_idx <= 3'd0;
       av_head_idx    <= 3'd0;
@@ -436,10 +443,11 @@ module attention (
         av_acc[av_dim_at_add_out] <= av_mac_sum;
       end
 
-      sc_bram_v <= {sc_bram_v[1:0], sc_issue};
+      sc_bram_v <= {sc_bram_v[2:0], sc_issue};
       sc_dim_pipe[0] <= sc_cnt[3:0];
       sc_dim_pipe[1] <= sc_dim_pipe[0];
       sc_dim_pipe[2] <= sc_dim_pipe[1];
+      sc_dim_pipe[3] <= sc_dim_pipe[2];
 
       // sc_red_in_cnt wraps every 16 mul outputs, toggling mul_pos_sel
       if (sc_mul_v_out) begin
@@ -526,7 +534,7 @@ module attention (
             sc_pos         <= 8'd0;
             sc_pos_cap     <= 8'd0;
             sc_cnt         <= 5'd0;
-            sc_bram_v      <= 3'b000;
+            sc_bram_v      <= 4'b0000;
             sc_red_in_cnt  <= 5'd0;
             red_issue_sel  <= 1'b0;
             red_cap_sel    <= 1'b0;
@@ -607,7 +615,7 @@ module attention (
                 sc_pos         <= 8'd0;
                 sc_pos_cap     <= 8'd0;
                 sc_cnt         <= 5'd0;
-                sc_bram_v      <= 3'b000;
+                sc_bram_v      <= 4'b0000;
                 sc_red_in_cnt  <= 5'd0;
                 red_issue_sel  <= 1'b0;
                 red_cap_sel    <= 1'b0;
