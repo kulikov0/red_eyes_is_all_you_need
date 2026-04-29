@@ -57,18 +57,18 @@ module embedding #(
   reg signed [7:0] w_data_r;
   always @(posedge clk_i) w_data_r <= w_data_i;
 
-  wire [7:0] prev2 = idx - 8'd2;
+  wire [7:0] prev3 = idx - 8'd3;
 
   // Combinational int8 -> fp16 conversion
   wire [15:0] tok_fp16;
-  fp16_from_int8 u_tok_cvt (.val_i(tok_buf[prev2[6:0]]), .fp16_o(tok_fp16));
+  fp16_from_int8 u_tok_cvt (.val_i(tok_buf[prev3[6:0]]), .fp16_o(tok_fp16));
 
   wire [15:0] pos_fp16;
   fp16_from_int8 u_pos_cvt (.val_i(w_data_r), .fp16_o(pos_fp16));
 
-  // Feed pipeline only while consuming pos reads in S_READ_POS, shifted by
-  // one cycle to wait for w_data_r to settle
-  wire feed_valid = (state == S_READ_POS) && (idx >= 8'd2) && (idx <= DIM[7:0] + 8'd1);
+  // Feed pipeline only while consuming pos reads in S_READ_POS, shifted to
+  // wait for w_data_r to settle behind the weight_store boundary register
+  wire feed_valid = (state == S_READ_POS) && (idx >= 8'd3) && (idx <= DIM[7:0] + 8'd2);
 
   // tok dequant: fp16 * tok_scale
   wire        tok_mv_out;
@@ -110,7 +110,7 @@ module embedding #(
   reg [$clog2(DIM)-1:0] feed_addr_pipe [0:4];
   integer i;
   always @(posedge clk_i) begin
-    feed_addr_pipe[0] <= prev2[$clog2(DIM)-1:0];
+    feed_addr_pipe[0] <= prev3[$clog2(DIM)-1:0];
     for (i = 1; i < 5; i = i + 1) feed_addr_pipe[i] <= feed_addr_pipe[i-1];
   end
 
@@ -144,16 +144,16 @@ module embedding #(
 
         // Read 128 bytes of tok_emb[token_id] into tok_buf via w_data_r
         S_READ_TOK: begin
-          if (idx == 8'd1)
+          if (idx == 8'd2)
             tok_scale_r <= w_scale_i;
           if (idx < DIM[7:0] - 8'd1) begin
             w_addr_o <= {1'b0, tok_base} + {8'd0, idx} + 16'd1;
           end
-          if (idx > 1) begin
-            tok_buf[prev2[6:0]] <= $signed(w_data_r);
+          if (idx > 2) begin
+            tok_buf[prev3[6:0]] <= $signed(w_data_r);
           end
           idx <= idx + 8'd1;
-          if (idx == DIM[7:0] + 8'd1) begin
+          if (idx == DIM[7:0] + 8'd2) begin
             state    <= S_READ_POS;
             idx      <= 8'd0;
             w_sel_o  <= 6'd1;
@@ -174,7 +174,7 @@ module embedding #(
           end
 
           idx <= idx + 8'd1;
-          if (idx == DIM[7:0] + 8'd6) begin
+          if (idx == DIM[7:0] + 8'd7) begin
             state <= S_DONE;
           end
         end

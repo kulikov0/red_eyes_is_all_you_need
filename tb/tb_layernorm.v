@@ -34,10 +34,18 @@ module tb_layernorm;
   reg [7:0] ln_mem [0:2303];
   initial $readmemh("/home/user/red_eyes_is_all_you_need/mem/ln_params.hex", ln_mem);
 
+  // Mirror weight_store: input boundary register + BRAM read = 2-cycle latency
+  reg [6:0] w_addr_r;
+  reg [5:0] w_sel_r;
+  always @(posedge clk) begin
+    w_addr_r <= w_addr;
+    w_sel_r  <= w_sel;
+  end
+
   // Offset LUT (matches weight_store.v)
   reg [11:0] ln_offset;
   always @(*) begin
-    case (w_sel)
+    case (w_sel_r)
       6'd2:  ln_offset = 12'd0;
       6'd3:  ln_offset = 12'd128;
       6'd6:  ln_offset = 12'd256;
@@ -60,16 +68,14 @@ module tb_layernorm;
     endcase
   end
 
-  // Registered BRAM read (1-cycle latency)
-  wire [11:0] ln_addr = ln_offset + {5'd0, w_addr};
+  wire [11:0] ln_addr = ln_offset + {5'd0, w_addr_r};
   reg [7:0] w_data_r;
   always @(posedge clk) w_data_r <= ln_mem[ln_addr];
   assign w_data = w_data_r;
 
-  // Scale stub keyed on w_sel
   reg [15:0] w_scale;
   always @(posedge clk) begin
-    case (w_sel)
+    case (w_sel_r)
       6'd2:  w_scale <= 16'h2124;
       6'd3:  w_scale <= 16'h1c90;
       6'd6:  w_scale <= 16'h209c;

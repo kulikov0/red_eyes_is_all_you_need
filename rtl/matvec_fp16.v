@@ -68,13 +68,14 @@ module matvec_fp16 #(
   reg signed [7:0] weight_data_r;
   always @(posedge clk_i) weight_data_r <= weight_data_i;
 
-  // Dequant valid: 2-cycle delay of state==S_COMPUTE matches the boundary reg
-  reg [1:0] state_compute_r;
+  // Dequant valid delays state==S_COMPUTE to align with weight_store latency
+  // plus the local weight_data_r register
+  reg [2:0] state_compute_r;
   always @(posedge clk_i) begin
-    if (rst_i) state_compute_r <= 2'b00;
-    else       state_compute_r <= {state_compute_r[0], (state == S_COMPUTE)};
+    if (rst_i) state_compute_r <= 3'b000;
+    else       state_compute_r <= {state_compute_r[1:0], (state == S_COMPUTE)};
   end
-  wire dq_valid_in = state_compute_r[1];
+  wire dq_valid_in = state_compute_r[2];
 
   // Dequant: int8 weight -> fp16 -> multiply by scale
   wire [15:0] w_fp16;
@@ -92,15 +93,15 @@ module matvec_fp16 #(
   );
 
   // Metadata shift registers track (col, k) through each pipeline stage
-  reg [COL_W-1:0] col_pipe [0:3];
-  reg [K_LOG-1:0] k_pipe   [0:8];
+  reg [COL_W-1:0] col_pipe [0:4];
+  reg [K_LOG-1:0] k_pipe   [0:9];
   integer i;
   always @(posedge clk_i) begin
     col_pipe[0] <= col;
-    for (i = 1; i < 4; i = i + 1) col_pipe[i] <= col_pipe[i-1];
+    for (i = 1; i < 5; i = i + 1) col_pipe[i] <= col_pipe[i-1];
 
     k_pipe[0] <= k;
-    for (i = 1; i < 9; i = i + 1) k_pipe[i] <= k_pipe[i-1];
+    for (i = 1; i < 10; i = i + 1) k_pipe[i] <= k_pipe[i-1];
   end
 
   // MAC multiply: dequanted weight * matching input element
@@ -110,7 +111,7 @@ module matvec_fp16 #(
     .clk_i(clk_i),
     .valid_i(dq_valid_out),
     .a_i(w_dequant),
-    .b_i(in_snap[col_pipe[3]]),
+    .b_i(in_snap[col_pipe[4]]),
     .valid_o(mac_valid_out),
     .prod_o(mac_prod)
   );
@@ -121,7 +122,7 @@ module matvec_fp16 #(
   fp16_add u_add (
     .clk_i(clk_i),
     .valid_i(mac_valid_out),
-    .a_i(acc[k_pipe[5]]),
+    .a_i(acc[k_pipe[6]]),
     .b_i(mac_prod),
     .valid_o(add_valid_out),
     .sum_o(add_sum)
@@ -146,7 +147,7 @@ module matvec_fp16 #(
 
       // Write back accumulator when add output is valid
       if (add_valid_out) begin
-        acc[k_pipe[8]] <= add_sum;
+        acc[k_pipe[9]] <= add_sum;
       end
 
       case (state)
@@ -193,7 +194,7 @@ module matvec_fp16 #(
 
         // Wait for last in-flight MACs to propagate through the pipeline
         S_DRAIN: begin
-          if (drain_cnt == 4'd8) begin
+          if (drain_cnt == 4'd9) begin
             state   <= S_WRITE;
             write_k <= 0;
           end else begin

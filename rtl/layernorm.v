@@ -167,7 +167,7 @@ module layernorm #(
   fp16_from_int8 u_dequant (.val_i(w_data_r), .fp16_o(dequant_fp16));
 
   wire deq_valid_in = ((state == S_LOAD_GAMMA) || (state == S_LOAD_BETA)) &&
-                      (idx >= 8'd2) && (idx <= DIM[7:0] + 8'd1);
+                      (idx >= 8'd3) && (idx <= DIM[7:0] + 8'd2);
 
   wire        deq_valid_out;
   wire [15:0] dequant_scaled;
@@ -180,12 +180,12 @@ module layernorm #(
     .prod_o(dequant_scaled)
   );
 
-  // Track gamma/beta write address through dequant pipeline. Source is idx-2
-  // since the boundary register delays w_data_r by one cycle
-  wire [7:0] prev2 = idx - 8'd2;
+  // Track gamma/beta write address through dequant pipeline. Source is idx-3
+  // to match weight_store + boundary register delay through w_data_r
+  wire [7:0] prev3 = idx - 8'd3;
   reg [$clog2(DIM)-1:0] deq_addr_r1, deq_addr_r2;
   always @(posedge clk_i) begin
-    deq_addr_r1 <= prev2[$clog2(DIM)-1:0];
+    deq_addr_r1 <= prev3[$clog2(DIM)-1:0];
     deq_addr_r2 <= deq_addr_r1;
   end
 
@@ -337,7 +337,7 @@ module layernorm #(
             gamma_buf[deq_addr_r2] <= dequant_scaled;
           end
           idx <= idx + 8'd1;
-          if (idx == DIM[7:0] + 8'd3) begin
+          if (idx == DIM[7:0] + 8'd4) begin
             state    <= S_LOAD_BETA;
             idx      <= 8'd0;
             w_sel_o  <= gamma_sel_i + 6'd1;
@@ -353,7 +353,7 @@ module layernorm #(
             beta_buf[deq_addr_r2] <= dequant_scaled;
           end
           idx <= idx + 8'd1;
-          if (idx == DIM[7:0] + 8'd3) begin
+          if (idx == DIM[7:0] + 8'd4) begin
             state <= S_NORM_FEED;
             idx   <= 8'd0;
           end

@@ -53,6 +53,14 @@ module weight_store (
   // FP16 scale factors
   `include "weight_scales.vh"
 
+  // Boundary register on inputs breaks the FSM_state -> BRAM addr fanout
+  reg [15:0] addr_r;
+  reg [5:0]  sel_r1;
+  always @(posedge clk_i) begin
+    addr_r <= addr_i;
+    sel_r1 <= tensor_sel_i;
+  end
+
   // BRAM ROM outputs (synchronous, 1-cycle latency)
   wire [7:0] d_tok_emb,       d_pos_emb;
   wire [7:0] d_b0_qkv,       d_b0_proj,    d_b0_ff_up,   d_b0_ff_down;
@@ -64,7 +72,7 @@ module weight_store (
   // Offset LUT maps tensor_sel to base address within ln_params.hex
   wire [7:0] d_ln;
   reg [11:0] ln_offset;
-  wire [11:0] ln_addr = ln_offset + {5'd0, addr_i[6:0]};
+  wire [11:0] ln_addr = ln_offset + {5'd0, addr_r[6:0]};
 
   // Large weight ROMs
 
@@ -74,7 +82,7 @@ module weight_store (
     .HEX_FILE("/home/user/red_eyes_is_all_you_need/mem/tok_emb_weight.hex")
   ) u_tok_emb (
     .clk_i (clk_i),
-    .addr_i(addr_i[14:0]),
+    .addr_i(addr_r[14:0]),
     .data_o(d_tok_emb)
   );
 
@@ -83,7 +91,7 @@ module weight_store (
     .HEX_FILE("/home/user/red_eyes_is_all_you_need/mem/pos_emb_weight.hex")
   ) u_pos_emb (
     .clk_i (clk_i),
-    .addr_i(addr_i[14:0]),
+    .addr_i(addr_r[14:0]),
     .data_o(d_pos_emb)
   );
 
@@ -93,7 +101,7 @@ module weight_store (
     .HEX_FILE("/home/user/red_eyes_is_all_you_need/mem/block0_attn_qkv_weight.hex")
   ) u_b0_qkv (
     .clk_i (clk_i),
-    .addr_i(addr_i[15:0]),
+    .addr_i(addr_r[15:0]),
     .data_o(d_b0_qkv)
   );
 
@@ -102,7 +110,7 @@ module weight_store (
     .HEX_FILE("/home/user/red_eyes_is_all_you_need/mem/block0_attn_proj_weight.hex")
   ) u_b0_proj (
     .clk_i (clk_i),
-    .addr_i(addr_i[13:0]),
+    .addr_i(addr_r[13:0]),
     .data_o(d_b0_proj)
   );
 
@@ -111,7 +119,7 @@ module weight_store (
     .HEX_FILE("/home/user/red_eyes_is_all_you_need/mem/block0_ff_up_weight.hex")
   ) u_b0_ff_up (
     .clk_i (clk_i),
-    .addr_i(addr_i[15:0]),
+    .addr_i(addr_r[15:0]),
     .data_o(d_b0_ff_up)
   );
 
@@ -120,7 +128,7 @@ module weight_store (
     .HEX_FILE("/home/user/red_eyes_is_all_you_need/mem/block0_ff_down_weight.hex")
   ) u_b0_ff_down (
     .clk_i (clk_i),
-    .addr_i(addr_i[15:0]),
+    .addr_i(addr_r[15:0]),
     .data_o(d_b0_ff_down)
   );
 
@@ -130,7 +138,7 @@ module weight_store (
     .HEX_FILE("/home/user/red_eyes_is_all_you_need/mem/block1_attn_qkv_weight.hex")
   ) u_b1_qkv (
     .clk_i (clk_i),
-    .addr_i(addr_i[15:0]),
+    .addr_i(addr_r[15:0]),
     .data_o(d_b1_qkv)
   );
 
@@ -139,7 +147,7 @@ module weight_store (
     .HEX_FILE("/home/user/red_eyes_is_all_you_need/mem/block1_attn_proj_weight.hex")
   ) u_b1_proj (
     .clk_i (clk_i),
-    .addr_i(addr_i[13:0]),
+    .addr_i(addr_r[13:0]),
     .data_o(d_b1_proj)
   );
 
@@ -148,7 +156,7 @@ module weight_store (
     .HEX_FILE("/home/user/red_eyes_is_all_you_need/mem/block1_ff_up_weight.hex")
   ) u_b1_ff_up (
     .clk_i (clk_i),
-    .addr_i(addr_i[15:0]),
+    .addr_i(addr_r[15:0]),
     .data_o(d_b1_ff_up)
   );
 
@@ -157,7 +165,7 @@ module weight_store (
     .HEX_FILE("/home/user/red_eyes_is_all_you_need/mem/block1_ff_down_weight.hex")
   ) u_b1_ff_down (
     .clk_i (clk_i),
-    .addr_i(addr_i[15:0]),
+    .addr_i(addr_r[15:0]),
     .data_o(d_b1_ff_down)
   );
 
@@ -167,7 +175,7 @@ module weight_store (
     .HEX_FILE("/home/user/red_eyes_is_all_you_need/mem/block2_attn_qkv_weight.hex")
   ) u_b2_qkv (
     .clk_i (clk_i),
-    .addr_i(addr_i[15:0]),
+    .addr_i(addr_r[15:0]),
     .data_o(d_b2_qkv)
   );
 
@@ -176,7 +184,7 @@ module weight_store (
     .HEX_FILE("/home/user/red_eyes_is_all_you_need/mem/block2_attn_proj_weight.hex")
   ) u_b2_proj (
     .clk_i (clk_i),
-    .addr_i(addr_i[13:0]),
+    .addr_i(addr_r[13:0]),
     .data_o(d_b2_proj)
   );
 
@@ -185,7 +193,7 @@ module weight_store (
     .HEX_FILE("/home/user/red_eyes_is_all_you_need/mem/block2_ff_up_weight.hex")
   ) u_b2_ff_up (
     .clk_i (clk_i),
-    .addr_i(addr_i[15:0]),
+    .addr_i(addr_r[15:0]),
     .data_o(d_b2_ff_up)
   );
 
@@ -194,7 +202,7 @@ module weight_store (
     .HEX_FILE("/home/user/red_eyes_is_all_you_need/mem/block2_ff_down_weight.hex")
   ) u_b2_ff_down (
     .clk_i (clk_i),
-    .addr_i(addr_i[15:0]),
+    .addr_i(addr_r[15:0]),
     .data_o(d_b2_ff_down)
   );
 
@@ -204,7 +212,7 @@ module weight_store (
     .HEX_FILE("/home/user/red_eyes_is_all_you_need/mem/block3_attn_qkv_weight.hex")
   ) u_b3_qkv (
     .clk_i (clk_i),
-    .addr_i(addr_i[15:0]),
+    .addr_i(addr_r[15:0]),
     .data_o(d_b3_qkv)
   );
 
@@ -213,7 +221,7 @@ module weight_store (
     .HEX_FILE("/home/user/red_eyes_is_all_you_need/mem/block3_attn_proj_weight.hex")
   ) u_b3_proj (
     .clk_i (clk_i),
-    .addr_i(addr_i[13:0]),
+    .addr_i(addr_r[13:0]),
     .data_o(d_b3_proj)
   );
 
@@ -222,7 +230,7 @@ module weight_store (
     .HEX_FILE("/home/user/red_eyes_is_all_you_need/mem/block3_ff_up_weight.hex")
   ) u_b3_ff_up (
     .clk_i (clk_i),
-    .addr_i(addr_i[15:0]),
+    .addr_i(addr_r[15:0]),
     .data_o(d_b3_ff_up)
   );
 
@@ -231,7 +239,7 @@ module weight_store (
     .HEX_FILE("/home/user/red_eyes_is_all_you_need/mem/block3_ff_down_weight.hex")
   ) u_b3_ff_down (
     .clk_i (clk_i),
-    .addr_i(addr_i[15:0]),
+    .addr_i(addr_r[15:0]),
     .data_o(d_b3_ff_down)
   );
 
@@ -249,7 +257,7 @@ module weight_store (
   // Order matches extract_weights.py: all size-128 tensors in bin order
   // idx 0: b0_ln1_w, 1: b0_ln1_b, 2: b0_ln2_w, ... 17: ln_f_b
   always @(*) begin
-    case (tensor_sel_i)
+    case (sel_r1)
       6'd2:  ln_offset = 12'd0;     // block0_ln1_weight
       6'd3:  ln_offset = 12'd128;   // block0_ln1_bias
       6'd6:  ln_offset = 12'd256;   // block0_ln2_weight
@@ -275,7 +283,7 @@ module weight_store (
   // Output MUX: tensor_sel -> data
   // Registered to match BRAM 1-cycle latency
   reg [5:0] sel_r;
-  always @(posedge clk_i) sel_r <= tensor_sel_i;
+  always @(posedge clk_i) sel_r <= sel_r1;
 
   always @(*) begin
     case (sel_r)
@@ -321,7 +329,7 @@ module weight_store (
 
   // Scale LUT: tensor_sel -> fp16 scale
   always @(posedge clk_i) begin
-    case (tensor_sel_i)
+    case (sel_r1)
       6'd0:  scale_o <= SCALE_TOK_EMB_WEIGHT;
       6'd1:  scale_o <= SCALE_POS_EMB_WEIGHT;
       6'd2:  scale_o <= SCALE_BLOCK0_LN1_WEIGHT;

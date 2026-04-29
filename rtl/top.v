@@ -23,9 +23,9 @@ module top (
   output wire [3:0] led_n_o
 );
 
-  // MMCM: 200 MHz LVDS -> 87.5 MHz
+  // MMCM: 200 MHz LVDS -> 90 MHz
   wire clk_200;
-  wire clk_87;
+  wire clk_90;
   wire mmcm_locked;
 
   IBUFDS ibuf_clk (
@@ -38,7 +38,7 @@ module top (
 
   MMCME2_BASE #(
     .CLKIN1_PERIOD (5.0),
-    .CLKFBOUT_MULT_F (4.375),
+    .CLKFBOUT_MULT_F (4.5),
     .CLKOUT0_DIVIDE_F(10.0)
   ) mmcm_inst (
     .CLKIN1  (clk_200),
@@ -46,11 +46,11 @@ module top (
     .PWRDWN  (1'b0),
     .CLKFBOUT(mmcm_fb),
     .CLKFBIN (mmcm_fb),
-    .CLKOUT0 (clk_87),
+    .CLKOUT0 (clk_90),
     .LOCKED  (mmcm_locked)
   );
 
-  wire clk = clk_87;
+  wire clk = clk_90;
 
   // Reset synchronizer (active-high internal reset)
   reg [3:0] rst_pipe;
@@ -67,7 +67,7 @@ module top (
   wire [7:0] rx_data;
   wire       rx_valid;
 
-  uart_rx #(.CLK_FREQ(87_500_000), .BAUD(115_200)) u_rx (
+  uart_rx #(.CLK_FREQ(90_000_000), .BAUD(115_200)) u_rx (
     .clk_i  (clk),
     .rst_i  (rst),
     .rx_i   (uart_rx_i),
@@ -80,7 +80,7 @@ module top (
   reg        tx_start;
   wire       tx_busy;
 
-  uart_tx #(.CLK_FREQ(87_500_000), .BAUD(115_200)) u_tx (
+  uart_tx #(.CLK_FREQ(90_000_000), .BAUD(115_200)) u_tx (
     .clk_i  (clk),
     .rst_i  (rst),
     .data_i (tx_data),
@@ -282,8 +282,8 @@ module top (
       rx_blink      <= 0;
       tx_blink      <= 0;
     end else begin
-      // Heartbeat ~0.33s toggle at 80 MHz
-      if (heartbeat_cnt == 24'd29_166_666) begin
+      // Heartbeat ~0.33s toggle at 90 MHz
+      if (heartbeat_cnt == 24'd30_000_000) begin
         heartbeat_cnt <= 0;
         heartbeat_r   <= ~heartbeat_r;
       end else begin

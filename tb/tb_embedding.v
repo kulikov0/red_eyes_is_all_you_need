@@ -32,20 +32,27 @@ module tb_embedding;
     $readmemh("/home/user/red_eyes_is_all_you_need/mem/pos_emb_weight.hex", pos_mem);
   end
 
+  // Mirror weight_store: input boundary register + BRAM read = 2-cycle latency
+  reg [14:0] w_addr_r;
+  reg [5:0]  w_sel_r;
+  always @(posedge clk) begin
+    w_addr_r <= w_addr[14:0];
+    w_sel_r  <= w_sel;
+  end
+
   reg [7:0] w_data_r;
   always @(posedge clk) begin
-    case (w_sel)
-      6'd0: w_data_r <= tok_mem[w_addr[14:0]];
-      6'd1: w_data_r <= pos_mem[w_addr[14:0]];
+    case (w_sel_r)
+      6'd0: w_data_r <= tok_mem[w_addr_r];
+      6'd1: w_data_r <= pos_mem[w_addr_r];
       default: w_data_r <= 8'd0;
     endcase
   end
   assign w_data = w_data_r;
 
-  // Scale stub: tok_emb=0x1e50, pos_emb=0x1ed6
   reg [15:0] w_scale;
   always @(posedge clk) begin
-    case (w_sel)
+    case (w_sel_r)
       6'd0: w_scale <= 16'h1e50;
       6'd1: w_scale <= 16'h1ed6;
       default: w_scale <= 16'd0;
