@@ -42,21 +42,23 @@ module attention (
   input  wire [7:0]    w_data_i,
   input  wire [15:0]   w_scale_i,
 
-  // K cache (fp16)
+  // K cache addr is separate from V so score and AV can run in parallel
   output reg           k_we_o,
   output reg  [15:0]   k_wdata_o,
+  output reg  [1:0]    k_layer_o,
+  output reg  [2:0]    k_head_o,
+  output reg  [7:0]    k_pos_o,
+  output reg  [3:0]    k_dim_o,
   input  wire [15:0]   k_rdata_i,
 
   // V cache (fp16)
   output reg           v_we_o,
   output reg  [15:0]   v_wdata_o,
+  output reg  [1:0]    v_layer_o,
+  output reg  [2:0]    v_head_o,
+  output reg  [7:0]    v_pos_o,
+  output reg  [3:0]    v_dim_o,
   input  wire [15:0]   v_rdata_i,
-
-  // Shared KV address (K and V never accessed simultaneously)
-  output reg  [1:0]    kv_layer_o,
-  output reg  [2:0]    kv_head_o,
-  output reg  [7:0]    kv_pos_o,
-  output reg  [3:0]    kv_dim_o,
 
   output reg           done_o
 );
@@ -64,22 +66,42 @@ module attention (
   // 1/sqrt(HEAD_DIM) = 1/sqrt(16) = 0.25
   localparam [15:0] INV_SQRT_DK = 16'h3400;
 
-  // FSM states
-  localparam [3:0] S_IDLE        = 4'd0,
-                   S_QKV         = 4'd1,
-                   S_KV_STORE    = 4'd2,
-                   S_SCORE       = 4'd3,
-                   S_SCORE_PAD   = 4'd4,
-                   S_SM_WAIT     = 4'd5,
-                   S_AV          = 4'd6,
-                   S_AV_STORE    = 4'd7,
-                   S_NEXT_HEAD   = 4'd8,
-                   S_PROJ        = 4'd9,
-                   S_DONE        = 4'd10;
+  // Top-level FSM states. S_HEADS runs the score and AV sub-FSMs in parallel
+  localparam [2:0] S_IDLE     = 3'd0,
+                   S_QKV      = 3'd1,
+                   S_KV_STORE = 3'd2,
+                   S_HEADS    = 3'd3,
+                   S_PROJ     = 3'd4,
+                   S_DONE     = 3'd5;
+  reg [2:0] state;
 
-  reg [3:0] state;
+  // Score sub-FSM: handles score, pad, softmax wait for one head
+  localparam [2:0] SC_IDLE    = 3'd0,
+                   SC_SCORE   = 3'd1,
+                   SC_PAD     = 3'd2,
+                   SC_SM_WAIT = 3'd3,
+                   SC_WAIT    = 3'd4,
+                   SC_DONE    = 3'd5;
+  reg [2:0] score_state;
+  reg [2:0] score_head_idx;
 
-  // Cap sub-FSM runs in parallel with S_SCORE issue side
+  // AV sub-FSM: handles AV accumulate and store for one head
+  localparam [2:0] AV_IDLE  = 3'd0,
+                   AV_RUN   = 3'd1,
+                   AV_STORE = 3'd2,
+                   AV_WAIT  = 3'd3,
+                   AV_DONE  = 3'd4;
+  reg [2:0] av_state;
+  reg [2:0] av_head_idx;
+
+  // Pipeline depth tracking. score writes attn_buf when scored_count
+  // increments; AV reads when av_done_count is behind. Difference must stay
+  // <= 2 so that score head N+2 doesn't overwrite buf still being read by
+  // AV head N
+  reg [3:0] scored_count;
+  reg [3:0] av_done_count;
+
+  // Cap sub-FSM runs in parallel with score sub-FSM SC_SCORE issue side
   localparam [1:0] C_IDLE = 2'd0,
                    C_WAIT = 2'd1,
                    C_MUL  = 2'd2,
@@ -92,9 +114,6 @@ module attention (
   // Latched inputs
   reg [1:0] layer_r;
   reg [7:0] pos_r;
-
-  // Head iteration
-  reg [2:0] head_idx;
 
   // Internal distributed RAMs for QKV output and head output
   reg [15:0] qkv_ram [0:383];
@@ -184,8 +203,11 @@ module attention (
   // QKV act_raddr passthrough to shared RAM
   assign act_raddr_o = qkv_act_raddr;
 
-  // Attention buffer: 256 x 16-bit softmax outputs (Q1.15)
-  reg [15:0] attn_buf [0:255];
+  // Attention buffer: 256 x 16-bit softmax outputs (Q1.15), ping-ponged
+  // between two banks so head N+1's softmax writes one bank while head N's
+  // AV reads the other. Bank chosen by head index LSB
+  reg [15:0] attn_buf_a [0:255];
+  reg [15:0] attn_buf_b [0:255];
 
   // AV accumulators: 16 x fp16
   reg [15:0] av_acc [0:15];
@@ -209,7 +231,7 @@ module attention (
 
   // Softmax output capture counter
   reg [8:0] sm_out_cnt;
-  reg [8:0] pad_cnt;  // counter for S_SCORE_PAD
+  reg [8:0] pad_cnt;
 
 
   // Q_head extraction: read from qkv_ram
@@ -217,7 +239,7 @@ module attention (
   genvar gi;
   generate
     for (gi = 0; gi < 16; gi = gi + 1) begin : gen_q
-      assign q_head[gi] = qkv_ram[head_idx * 16 + gi];
+      assign q_head[gi] = qkv_ram[score_head_idx * 16 + gi];
     end
   endgenerate
 
@@ -227,7 +249,7 @@ module attention (
   wire [15:0] kv_fp16_v = qkv_ram[256 + kv_idx];
 
   // Score Q*K mul, products feed the reducer below
-  wire sc_issue = (state == S_SCORE) && (sc_cnt < 5'd16);
+  wire sc_issue = (score_state == SC_SCORE) && (sc_cnt < 5'd16);
 
   wire        sc_mul_v_out;
   wire [15:0] sc_mac_prod;
@@ -246,7 +268,7 @@ module attention (
   reg mul_pos_sel;
 
   // Hold clear for 4 cycles so it latches when the reducer reaches S_IDLE
-  wire sc_clear_pulse = (state == S_SCORE) && (sc_cnt < 5'd4);
+  wire sc_clear_pulse = (score_state == SC_SCORE) && (sc_cnt < 5'd4);
   wire sc_clear_a     = sc_clear_pulse && !red_issue_sel;
   wire sc_clear_b     = sc_clear_pulse &&  red_issue_sel;
 
@@ -309,11 +331,12 @@ module attention (
 
   // AV: Q1.15 -> fp16, then fp16 * V, accumulated into av_acc[d]
   // a_i pipeline depth matches b_i so av_pos can advance mid-stream
+  // attn_buf bank chosen by AV head LSB (the same bank softmax wrote to)
   reg [7:0]  av_pos_r1;
   reg [15:0] attn_val_r;
   always @(posedge clk_i) begin
     av_pos_r1  <= av_pos;
-    attn_val_r <= attn_buf[av_pos_r1];
+    attn_val_r <= av_head_idx[0] ? attn_buf_b[av_pos_r1] : attn_buf_a[av_pos_r1];
   end
 
   wire [15:0] av_attn_fp16;
@@ -325,7 +348,7 @@ module attention (
   reg [15:0] av_attn_fp16_r;
   always @(posedge clk_i) av_attn_fp16_r <= av_attn_fp16;
 
-  wire av_issue = (state == S_AV) && (av_cnt < 5'd16);
+  wire av_issue = (av_state == AV_RUN) && (av_cnt < 5'd16);
   wire av_mul_v_in = av_bram_v[2];
 
   wire        av_mul_v_out;
@@ -380,17 +403,23 @@ module attention (
 
   always @(posedge clk_i) begin
     if (rst_i) begin
-      state         <= S_IDLE;
-      done_o        <= 1'b0;
-      qkv_start     <= 1'b0;
-      proj_start    <= 1'b0;
-      sm_start      <= 1'b0;
-      sm_in_valid   <= 1'b0;
-      k_we_o        <= 1'b0;
-      v_we_o        <= 1'b0;
-      av_bram_v     <= 3'b000;
-      sc_bram_v     <= 3'b000;
-      av_issue_done <= 1'b0;
+      state          <= S_IDLE;
+      score_state    <= SC_IDLE;
+      av_state       <= AV_IDLE;
+      done_o         <= 1'b0;
+      qkv_start      <= 1'b0;
+      proj_start     <= 1'b0;
+      sm_start       <= 1'b0;
+      sm_in_valid    <= 1'b0;
+      k_we_o         <= 1'b0;
+      v_we_o         <= 1'b0;
+      av_bram_v      <= 3'b000;
+      sc_bram_v      <= 3'b000;
+      av_issue_done  <= 1'b0;
+      score_head_idx <= 3'd0;
+      av_head_idx    <= 3'd0;
+      scored_count   <= 4'd0;
+      av_done_count  <= 4'd0;
     end else begin
       done_o      <= 1'b0;
       qkv_start   <= 1'b0;
@@ -422,7 +451,7 @@ module attention (
         end
       end
 
-      if (state == S_SCORE) begin
+      if (score_state == SC_SCORE) begin
         case (cap_state)
           C_WAIT: begin
             if (sc_red_done && !cap_done) begin
@@ -468,10 +497,14 @@ module attention (
         // Write K[pos] and V[pos] to caches (both fp16, no requant)
         // First 128 cycles: K, next 128 cycles: V
         S_KV_STORE: begin
-          kv_layer_o <= layer_r;
-          kv_pos_o   <= pos_r;
-          kv_head_o  <= kv_idx[6:4];
-          kv_dim_o   <= kv_idx[3:0];
+          k_layer_o <= layer_r;
+          k_pos_o   <= pos_r;
+          k_head_o  <= kv_idx[6:4];
+          k_dim_o   <= kv_idx[3:0];
+          v_layer_o <= layer_r;
+          v_pos_o   <= pos_r;
+          v_head_o  <= kv_idx[6:4];
+          v_dim_o   <= kv_idx[3:0];
 
           if (kv_cnt < 9'd128) begin
             k_we_o    <= 1'b1;
@@ -482,146 +515,185 @@ module attention (
           end
 
           if (kv_cnt == 9'd255) begin
-            state         <= S_SCORE;
-            head_idx      <= 3'd0;
-            sm_start      <= 1'b1;
-            sc_pos        <= 8'd0;
-            sc_pos_cap    <= 8'd0;
-            sc_cnt        <= 5'd0;
-            sc_bram_v     <= 3'b000;
-            sc_red_in_cnt <= 5'd0;
-            red_issue_sel <= 1'b0;
-            red_cap_sel   <= 1'b0;
-            mul_pos_sel   <= 1'b0;
-            issue_done    <= 1'b0;
-            cap_done      <= 1'b0;
-            cap_state     <= C_WAIT;
+            state          <= S_HEADS;
+            score_head_idx <= 3'd0;
+            av_head_idx    <= 3'd0;
+            scored_count   <= 4'd0;
+            av_done_count  <= 4'd0;
+            score_state    <= SC_SCORE;
+            av_state       <= AV_IDLE;
+            sm_start       <= 1'b1;
+            sc_pos         <= 8'd0;
+            sc_pos_cap     <= 8'd0;
+            sc_cnt         <= 5'd0;
+            sc_bram_v      <= 3'b000;
+            sc_red_in_cnt  <= 5'd0;
+            red_issue_sel  <= 1'b0;
+            red_cap_sel    <= 1'b0;
+            mul_pos_sel    <= 1'b0;
+            issue_done     <= 1'b0;
+            cap_done       <= 1'b0;
+            cap_state      <= C_WAIT;
           end
           kv_cnt <= kv_cnt + 9'd1;
         end
 
-        // Score: fp16 Q . K[p] for p = 0..pos. Issue advances every 16
-        // cycles; cap sub-FSM above captures dones and feeds softmax
-        S_SCORE: begin
-          kv_layer_o <= layer_r;
-          kv_head_o  <= head_idx;
-          k_we_o     <= 1'b0;
+        S_HEADS: begin
+          // Score sub-FSM
+          case (score_state)
+            SC_SCORE: begin
+              k_layer_o <= layer_r;
+              k_head_o  <= score_head_idx;
+              k_we_o    <= 1'b0;
 
-          if (!issue_done && sc_cnt < 5'd16) begin
-            kv_pos_o <= sc_pos;
-            kv_dim_o <= sc_cnt[3:0];
-            sc_cnt   <= sc_cnt + 5'd1;
-          end
-
-          if (!issue_done && sc_cnt == 5'd15) begin
-            if (sc_pos == pos_r) begin
-              issue_done <= 1'b1;
-            end else begin
-              sc_pos        <= sc_pos + 8'd1;
-              sc_cnt        <= 5'd0;
-              red_issue_sel <= ~red_issue_sel;
-            end
-          end
-
-          if (issue_done && cap_done) begin
-            if (pos_r == 8'd255) begin
-              state      <= S_SM_WAIT;
-              sm_out_cnt <= 9'd0;
-            end else begin
-              state   <= S_SCORE_PAD;
-              pad_cnt <= {1'b0, pos_r} + 9'd1;
-            end
-          end
-        end
-
-        // Pad remaining slots with Q16.7 minimum for softmax
-        S_SCORE_PAD: begin
-          sm_in_valid <= 1'b1;
-          sm_in_data  <= 24'sh800000;
-          pad_cnt     <= pad_cnt + 9'd1;
-          if (pad_cnt == 9'd255) begin
-            state      <= S_SM_WAIT;
-            sm_out_cnt <= 9'd0;
-          end
-        end
-
-        // Capture softmax outputs (Q1.15)
-        S_SM_WAIT: begin
-          if (sm_out_valid) begin
-            attn_buf[sm_out_cnt[7:0]] <= sm_out_data;
-            sm_out_cnt <= sm_out_cnt + 9'd1;
-          end
-          if (sm_done) begin
-            state         <= S_AV;
-            av_pos        <= 8'd0;
-            av_cnt        <= 5'd0;
-            av_bram_v     <= 3'b000;
-            av_issue_done <= 1'b0;
-            for (j = 0; j < 16; j = j + 1) begin
-              av_acc[j] <= 16'd0;
-            end
-          end
-        end
-
-        // AV: av_acc[d] += attn_fp16[p] * V_fp16[p][d] for d=0..15, p=0..pos
-        // Position advances at issue completion (av_cnt==15); next position's
-        // reads start immediately while previous position's adds drain
-        S_AV: begin
-          kv_layer_o <= layer_r;
-          kv_head_o  <= head_idx;
-          v_we_o     <= 1'b0;
-
-          if (!av_issue_done) begin
-            if (av_cnt < 5'd16) begin
-              kv_pos_o <= av_pos;
-              kv_dim_o <= av_cnt[3:0];
-            end
-
-            if (av_cnt == 5'd15) begin
-              if (av_pos == pos_r) begin
-                av_issue_done <= 1'b1;
-                av_cnt        <= av_cnt + 5'd1;
-              end else begin
-                av_pos <= av_pos + 8'd1;
-                av_cnt <= 5'd0;
+              if (!issue_done && sc_cnt < 5'd16) begin
+                k_pos_o <= sc_pos;
+                k_dim_o <= sc_cnt[3:0];
+                sc_cnt  <= sc_cnt + 5'd1;
               end
-            end else begin
-              av_cnt <= av_cnt + 5'd1;
+
+              if (!issue_done && sc_cnt == 5'd15) begin
+                if (sc_pos == pos_r) begin
+                  issue_done <= 1'b1;
+                end else begin
+                  sc_pos        <= sc_pos + 8'd1;
+                  sc_cnt        <= 5'd0;
+                  red_issue_sel <= ~red_issue_sel;
+                end
+              end
+
+              if (issue_done && cap_done) begin
+                if (pos_r == 8'd255) begin
+                  score_state <= SC_SM_WAIT;
+                  sm_out_cnt  <= 9'd0;
+                end else begin
+                  score_state <= SC_PAD;
+                  pad_cnt     <= {1'b0, pos_r} + 9'd1;
+                end
+              end
             end
-          end
 
-          // Exit when last position's last add output has been written
-          if (av_issue_done && av_add_v_out && av_dim_at_add_out == 4'd15) begin
-            state <= S_AV_STORE;
-          end
-        end
+            SC_PAD: begin
+              sm_in_valid <= 1'b1;
+              sm_in_data  <= 24'sh800000;
+              pad_cnt     <= pad_cnt + 9'd1;
+              if (pad_cnt == 9'd255) begin
+                score_state <= SC_SM_WAIT;
+                sm_out_cnt  <= 9'd0;
+              end
+            end
 
-        S_AV_STORE: begin
-          for (j = 0; j < 16; j = j + 1) begin
-            head_ram[head_idx * 16 + j] <= av_acc[j];
-          end
-          state <= S_NEXT_HEAD;
-        end
+            SC_SM_WAIT: begin
+              if (sm_out_valid) begin
+                if (score_head_idx[0]) attn_buf_b[sm_out_cnt[7:0]] <= sm_out_data;
+                else                   attn_buf_a[sm_out_cnt[7:0]] <= sm_out_data;
+                sm_out_cnt <= sm_out_cnt + 9'd1;
+              end
+              if (sm_done) begin
+                scored_count <= scored_count + 4'd1;
+                if (score_head_idx == 3'd7) score_state <= SC_DONE;
+                else                        score_state <= SC_WAIT;
+              end
+            end
 
-        S_NEXT_HEAD: begin
-          if (head_idx == 3'd7) begin
+            // Wait until the buf the next head needs to write is no longer
+            // being read by AV. Next writer is head score_head_idx+1; previous
+            // writer of the same buf was head score_head_idx-1
+            SC_WAIT: begin
+              if ({1'b0, score_head_idx} <= av_done_count) begin
+                score_head_idx <= score_head_idx + 3'd1;
+                score_state    <= SC_SCORE;
+                sm_start       <= 1'b1;
+                sc_pos         <= 8'd0;
+                sc_pos_cap     <= 8'd0;
+                sc_cnt         <= 5'd0;
+                sc_bram_v      <= 3'b000;
+                sc_red_in_cnt  <= 5'd0;
+                red_issue_sel  <= 1'b0;
+                red_cap_sel    <= 1'b0;
+                mul_pos_sel    <= 1'b0;
+                issue_done     <= 1'b0;
+                cap_done       <= 1'b0;
+                cap_state      <= C_WAIT;
+              end
+            end
+
+            default: ;
+          endcase
+
+          // AV sub-FSM
+          case (av_state)
+            AV_IDLE: begin
+              // Wait for first head's softmax to fill its attn_buf
+              if (scored_count >= 4'd1) begin
+                av_state      <= AV_RUN;
+                av_pos        <= 8'd0;
+                av_cnt        <= 5'd0;
+                av_bram_v     <= 3'b000;
+                av_issue_done <= 1'b0;
+                for (j = 0; j < 16; j = j + 1) av_acc[j] <= 16'd0;
+              end
+            end
+
+            // AV: av_acc[d] += attn_fp16[p] * V_fp16[p][d] for d=0..15, p=0..pos
+            AV_RUN: begin
+              v_layer_o <= layer_r;
+              v_head_o  <= av_head_idx;
+              v_we_o    <= 1'b0;
+
+              if (!av_issue_done) begin
+                if (av_cnt < 5'd16) begin
+                  v_pos_o <= av_pos;
+                  v_dim_o <= av_cnt[3:0];
+                end
+
+                if (av_cnt == 5'd15) begin
+                  if (av_pos == pos_r) begin
+                    av_issue_done <= 1'b1;
+                    av_cnt        <= av_cnt + 5'd1;
+                  end else begin
+                    av_pos <= av_pos + 8'd1;
+                    av_cnt <= 5'd0;
+                  end
+                end else begin
+                  av_cnt <= av_cnt + 5'd1;
+                end
+              end
+
+              if (av_issue_done && av_add_v_out && av_dim_at_add_out == 4'd15) begin
+                av_state <= AV_STORE;
+              end
+            end
+
+            AV_STORE: begin
+              for (j = 0; j < 16; j = j + 1) begin
+                head_ram[av_head_idx * 16 + j] <= av_acc[j];
+              end
+              av_done_count <= av_done_count + 4'd1;
+              if (av_head_idx == 3'd7) av_state <= AV_DONE;
+              else                     av_state <= AV_WAIT;
+            end
+
+            // Wait for next head's softmax done
+            AV_WAIT: begin
+              if (scored_count >= {1'b0, av_head_idx} + 4'd2) begin
+                av_head_idx   <= av_head_idx + 3'd1;
+                av_state      <= AV_RUN;
+                av_pos        <= 8'd0;
+                av_cnt        <= 5'd0;
+                av_bram_v     <= 3'b000;
+                av_issue_done <= 1'b0;
+                for (j = 0; j < 16; j = j + 1) av_acc[j] <= 16'd0;
+              end
+            end
+
+            default: ;
+          endcase
+
+          // Exit when last head's AV+store is done
+          if (av_state == AV_DONE) begin
             state      <= S_PROJ;
             proj_start <= 1'b1;
-          end else begin
-            head_idx      <= head_idx + 3'd1;
-            state         <= S_SCORE;
-            sm_start      <= 1'b1;
-            sc_pos        <= 8'd0;
-            sc_pos_cap    <= 8'd0;
-            sc_cnt        <= 5'd0;
-            sc_bram_v     <= 3'b000;
-            sc_red_in_cnt <= 5'd0;
-            red_issue_sel <= 1'b0;
-            red_cap_sel   <= 1'b0;
-            mul_pos_sel   <= 1'b0;
-            issue_done    <= 1'b0;
-            cap_done      <= 1'b0;
-            cap_state     <= C_WAIT;
           end
         end
 

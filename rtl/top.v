@@ -103,21 +103,21 @@ module top (
     .scale_o     (w_scale)
   );
 
-  // KV caches (K and V, fp16)
+  // KV caches with independent address ports
   wire        k_we, v_we;
   wire [15:0] k_wdata, v_wdata;
   wire [15:0] k_rdata, v_rdata;
-  wire [1:0]  kv_layer;
-  wire [2:0]  kv_head;
-  wire [7:0]  kv_pos;
-  wire [3:0]  kv_dim;
+  wire [1:0]  k_layer, v_layer;
+  wire [2:0]  k_head, v_head;
+  wire [7:0]  k_pos, v_pos;
+  wire [3:0]  k_dim, v_dim;
 
   kv_cache #(.DATA_W(16)) u_kcache (
     .clk_i  (clk),
-    .layer_i(kv_layer),
-    .head_i (kv_head),
-    .pos_i  (kv_pos),
-    .dim_i  (kv_dim),
+    .layer_i(k_layer),
+    .head_i (k_head),
+    .pos_i  (k_pos),
+    .dim_i  (k_dim),
     .we_i   (k_we),
     .wdata_i(k_wdata),
     .rdata_o(k_rdata)
@@ -125,10 +125,10 @@ module top (
 
   kv_cache #(.DATA_W(16)) u_vcache (
     .clk_i  (clk),
-    .layer_i(kv_layer),
-    .head_i (kv_head),
-    .pos_i  (kv_pos),
-    .dim_i  (kv_dim),
+    .layer_i(v_layer),
+    .head_i (v_head),
+    .pos_i  (v_pos),
+    .dim_i  (v_dim),
     .we_i   (v_we),
     .wdata_i(v_wdata),
     .rdata_o(v_rdata)
@@ -155,14 +155,18 @@ module top (
     .w_scale_i   (w_scale),
     .k_we_o      (k_we),
     .k_wdata_o   (k_wdata),
+    .k_layer_o   (k_layer),
+    .k_head_o    (k_head),
+    .k_pos_o     (k_pos),
+    .k_dim_o     (k_dim),
     .k_rdata_i   (k_rdata),
     .v_we_o      (v_we),
     .v_wdata_o   (v_wdata),
+    .v_layer_o   (v_layer),
+    .v_head_o    (v_head),
+    .v_pos_o     (v_pos),
+    .v_dim_o     (v_dim),
     .v_rdata_i   (v_rdata),
-    .kv_layer_o  (kv_layer),
-    .kv_head_o   (kv_head),
-    .kv_pos_o    (kv_pos),
-    .kv_dim_o    (kv_dim),
     .token_o     (tf_token_out),
     .token_valid_o(tf_token_valid),
     .busy_o      (tf_busy),

@@ -35,18 +35,20 @@ module transformer_layer (
   // K cache (fp16)
   output wire          k_we_o,
   output wire [15:0]   k_wdata_o,
+  output wire [1:0]    k_layer_o,
+  output wire [2:0]    k_head_o,
+  output wire [7:0]    k_pos_o,
+  output wire [3:0]    k_dim_o,
   input  wire [15:0]   k_rdata_i,
 
   // V cache (fp16)
   output wire          v_we_o,
   output wire [15:0]   v_wdata_o,
+  output wire [1:0]    v_layer_o,
+  output wire [2:0]    v_head_o,
+  output wire [7:0]    v_pos_o,
+  output wire [3:0]    v_dim_o,
   input  wire [15:0]   v_rdata_i,
-
-  // KV cache address (shared K/V)
-  output wire [1:0]    kv_layer_o,
-  output wire [2:0]    kv_head_o,
-  output wire [7:0]    kv_pos_o,
-  output wire [3:0]    kv_dim_o,
 
   output reg           done_o
 );
@@ -128,12 +130,16 @@ module transformer_layer (
 
   wire         attn_k_we;
   wire [15:0]  attn_k_wdata;
+  wire [1:0]   attn_k_layer;
+  wire [2:0]   attn_k_head;
+  wire [7:0]   attn_k_pos;
+  wire [3:0]   attn_k_dim;
   wire         attn_v_we;
   wire [15:0]  attn_v_wdata;
-  wire [1:0]   attn_kv_layer;
-  wire [2:0]   attn_kv_head;
-  wire [7:0]   attn_kv_pos;
-  wire [3:0]   attn_kv_dim;
+  wire [1:0]   attn_v_layer;
+  wire [2:0]   attn_v_head;
+  wire [7:0]   attn_v_pos;
+  wire [3:0]   attn_v_dim;
 
   attention u_attn (
     .clk_i       (clk_i),
@@ -152,27 +158,35 @@ module transformer_layer (
     .w_scale_i   (w_scale_i),
     .k_we_o      (attn_k_we),
     .k_wdata_o   (attn_k_wdata),
+    .k_layer_o   (attn_k_layer),
+    .k_head_o    (attn_k_head),
+    .k_pos_o     (attn_k_pos),
+    .k_dim_o     (attn_k_dim),
     .k_rdata_i   (k_rdata_i),
     .v_we_o      (attn_v_we),
     .v_wdata_o   (attn_v_wdata),
+    .v_layer_o   (attn_v_layer),
+    .v_head_o    (attn_v_head),
+    .v_pos_o     (attn_v_pos),
+    .v_dim_o     (attn_v_dim),
     .v_rdata_i   (v_rdata_i),
-    .kv_layer_o  (attn_kv_layer),
-    .kv_head_o   (attn_kv_head),
-    .kv_pos_o    (attn_kv_pos),
-    .kv_dim_o    (attn_kv_dim),
     .done_o      (attn_done)
   );
 
 
   // KV cache pass-through from attention
-  assign k_we_o     = attn_k_we;
-  assign k_wdata_o  = attn_k_wdata;
-  assign v_we_o     = attn_v_we;
-  assign v_wdata_o  = attn_v_wdata;
-  assign kv_layer_o = attn_kv_layer;
-  assign kv_head_o  = attn_kv_head;
-  assign kv_pos_o   = attn_kv_pos;
-  assign kv_dim_o   = attn_kv_dim;
+  assign k_we_o    = attn_k_we;
+  assign k_wdata_o = attn_k_wdata;
+  assign k_layer_o = attn_k_layer;
+  assign k_head_o  = attn_k_head;
+  assign k_pos_o   = attn_k_pos;
+  assign k_dim_o   = attn_k_dim;
+  assign v_we_o    = attn_v_we;
+  assign v_wdata_o = attn_v_wdata;
+  assign v_layer_o = attn_v_layer;
+  assign v_head_o  = attn_v_head;
+  assign v_pos_o   = attn_v_pos;
+  assign v_dim_o   = attn_v_dim;
 
   // FF_up matvec: 128 -> 512, reads act_ram[0:127], writes act_ram[0:511]
   reg          ff_up_start;

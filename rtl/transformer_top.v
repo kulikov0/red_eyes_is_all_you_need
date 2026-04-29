@@ -36,18 +36,20 @@ module transformer_top (
   // K cache (fp16)
   output reg         k_we_o,
   output reg  [15:0] k_wdata_o,
+  output reg  [1:0]  k_layer_o,
+  output reg  [2:0]  k_head_o,
+  output reg  [7:0]  k_pos_o,
+  output reg  [3:0]  k_dim_o,
   input  wire [15:0] k_rdata_i,
 
   // V cache (fp16)
   output reg         v_we_o,
   output reg  [15:0] v_wdata_o,
+  output reg  [1:0]  v_layer_o,
+  output reg  [2:0]  v_head_o,
+  output reg  [7:0]  v_pos_o,
+  output reg  [3:0]  v_dim_o,
   input  wire [15:0] v_rdata_i,
-
-  // KV cache address (shared K/V)
-  output reg  [1:0]  kv_layer_o,
-  output reg  [2:0]  kv_head_o,
-  output reg  [7:0]  kv_pos_o,
-  output reg  [3:0]  kv_dim_o,
 
   // Output
   output reg  [7:0]  token_o,
@@ -116,12 +118,16 @@ module transformer_top (
 
   wire         tl_k_we;
   wire [15:0]  tl_k_wdata;
+  wire [1:0]   tl_k_layer;
+  wire [2:0]   tl_k_head;
+  wire [7:0]   tl_k_pos;
+  wire [3:0]   tl_k_dim;
   wire         tl_v_we;
   wire [15:0]  tl_v_wdata;
-  wire [1:0]   tl_kv_layer;
-  wire [2:0]   tl_kv_head;
-  wire [7:0]   tl_kv_pos;
-  wire [3:0]   tl_kv_dim;
+  wire [1:0]   tl_v_layer;
+  wire [2:0]   tl_v_head;
+  wire [7:0]   tl_v_pos;
+  wire [3:0]   tl_v_dim;
 
   transformer_layer u_tl (
     .clk_i       (clk_i),
@@ -140,14 +146,18 @@ module transformer_top (
     .w_scale_i   (w_scale_i),
     .k_we_o      (tl_k_we),
     .k_wdata_o   (tl_k_wdata),
+    .k_layer_o   (tl_k_layer),
+    .k_head_o    (tl_k_head),
+    .k_pos_o     (tl_k_pos),
+    .k_dim_o     (tl_k_dim),
     .k_rdata_i   (k_rdata_i),
     .v_we_o      (tl_v_we),
     .v_wdata_o   (tl_v_wdata),
+    .v_layer_o   (tl_v_layer),
+    .v_head_o    (tl_v_head),
+    .v_pos_o     (tl_v_pos),
+    .v_dim_o     (tl_v_dim),
     .v_rdata_i   (v_rdata_i),
-    .kv_layer_o  (tl_kv_layer),
-    .kv_head_o   (tl_kv_head),
-    .kv_pos_o    (tl_kv_pos),
-    .kv_dim_o    (tl_kv_dim),
     .done_o      (tl_done)
   );
 
@@ -155,23 +165,31 @@ module transformer_top (
   reg kv_active;
   always @(posedge clk_i) begin
     if (rst_i) begin
-      k_we_o     <= 1'b0;
-      k_wdata_o  <= 16'd0;
-      v_we_o     <= 1'b0;
-      v_wdata_o  <= 16'd0;
-      kv_layer_o <= 2'd0;
-      kv_head_o  <= 3'd0;
-      kv_pos_o   <= 8'd0;
-      kv_dim_o   <= 4'd0;
+      k_we_o    <= 1'b0;
+      k_wdata_o <= 16'd0;
+      k_layer_o <= 2'd0;
+      k_head_o  <= 3'd0;
+      k_pos_o   <= 8'd0;
+      k_dim_o   <= 4'd0;
+      v_we_o    <= 1'b0;
+      v_wdata_o <= 16'd0;
+      v_layer_o <= 2'd0;
+      v_head_o  <= 3'd0;
+      v_pos_o   <= 8'd0;
+      v_dim_o   <= 4'd0;
     end else begin
-      k_we_o     <= kv_active ? tl_k_we : 1'b0;
-      k_wdata_o  <= tl_k_wdata;
-      v_we_o     <= kv_active ? tl_v_we : 1'b0;
-      v_wdata_o  <= tl_v_wdata;
-      kv_layer_o <= tl_kv_layer;
-      kv_head_o  <= tl_kv_head;
-      kv_pos_o   <= tl_kv_pos;
-      kv_dim_o   <= tl_kv_dim;
+      k_we_o    <= kv_active ? tl_k_we : 1'b0;
+      k_wdata_o <= tl_k_wdata;
+      k_layer_o <= tl_k_layer;
+      k_head_o  <= tl_k_head;
+      k_pos_o   <= tl_k_pos;
+      k_dim_o   <= tl_k_dim;
+      v_we_o    <= kv_active ? tl_v_we : 1'b0;
+      v_wdata_o <= tl_v_wdata;
+      v_layer_o <= tl_v_layer;
+      v_head_o  <= tl_v_head;
+      v_pos_o   <= tl_v_pos;
+      v_dim_o   <= tl_v_dim;
     end
   end
 

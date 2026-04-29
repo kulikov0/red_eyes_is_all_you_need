@@ -14,11 +14,11 @@ module tb_transformer_top;
   wire [5:0]  w_sel;
   wire [15:0] w_addr;
   wire [7:0]  w_data;
-  // DUT <-> KV caches (both fp16)
-  wire [1:0]  kv_layer;
-  wire [2:0]  kv_head;
-  wire [7:0]  kv_pos;
-  wire [3:0]  kv_dim;
+  // DUT <-> KV caches, independent address ports
+  wire [1:0]  k_layer, v_layer;
+  wire [2:0]  k_head,  v_head;
+  wire [7:0]  k_pos,   v_pos;
+  wire [3:0]  k_dim,   v_dim;
   wire        k_we;
   wire [15:0] k_wdata;
   wire [15:0] k_rdata;
@@ -45,10 +45,10 @@ module tb_transformer_top;
   // K cache (fp16, DATA_W=16)
   kv_cache #(.DATA_W(16)) u_k_cache (
     .clk_i  (clk),
-    .layer_i(kv_layer),
-    .head_i (kv_head),
-    .pos_i  (kv_pos),
-    .dim_i  (kv_dim),
+    .layer_i(k_layer),
+    .head_i (k_head),
+    .pos_i  (k_pos),
+    .dim_i  (k_dim),
     .we_i   (k_we),
     .wdata_i(k_wdata),
     .rdata_o(k_rdata)
@@ -57,10 +57,10 @@ module tb_transformer_top;
   // V cache (fp16, DATA_W=16)
   kv_cache #(.DATA_W(16)) u_v_cache (
     .clk_i  (clk),
-    .layer_i(kv_layer),
-    .head_i (kv_head),
-    .pos_i  (kv_pos),
-    .dim_i  (kv_dim),
+    .layer_i(v_layer),
+    .head_i (v_head),
+    .pos_i  (v_pos),
+    .dim_i  (v_dim),
     .we_i   (v_we),
     .wdata_i(v_wdata),
     .rdata_o(v_rdata)
@@ -79,14 +79,18 @@ module tb_transformer_top;
     .w_scale_i   (w_scale),
     .k_we_o      (k_we),
     .k_wdata_o   (k_wdata),
+    .k_layer_o   (k_layer),
+    .k_head_o    (k_head),
+    .k_pos_o     (k_pos),
+    .k_dim_o     (k_dim),
     .k_rdata_i   (k_rdata),
     .v_we_o      (v_we),
     .v_wdata_o   (v_wdata),
+    .v_layer_o   (v_layer),
+    .v_head_o    (v_head),
+    .v_pos_o     (v_pos),
+    .v_dim_o     (v_dim),
     .v_rdata_i   (v_rdata),
-    .kv_layer_o  (kv_layer),
-    .kv_head_o   (kv_head),
-    .kv_pos_o    (kv_pos),
-    .kv_dim_o    (kv_dim),
     .token_o     (out_token),
     .token_valid_o(token_valid),
     .busy_o      (),

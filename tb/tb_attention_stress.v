@@ -25,10 +25,10 @@ module tb_attention_stress;
   wire [15:0] w_addr;
   wire [7:0]  w_data;
 
-  wire [1:0]  kv_layer;
-  wire [2:0]  kv_head;
-  wire [7:0]  kv_pos;
-  wire [3:0]  kv_dim;
+  wire [1:0]  k_layer, v_layer;
+  wire [2:0]  k_head,  v_head;
+  wire [7:0]  k_pos,   v_pos;
+  wire [3:0]  k_dim,   v_dim;
   wire        k_we;
   wire [15:0] k_wdata;
   wire [15:0] k_rdata;
@@ -41,23 +41,27 @@ module tb_attention_stress;
   wire [15:0] w_scale;
 
   // KV boundary register: mirrors transformer_top's reg between DUT and cache
-  reg [1:0]  kv_layer_r;
-  reg [2:0]  kv_head_r;
-  reg [7:0]  kv_pos_r;
-  reg [3:0]  kv_dim_r;
+  reg [1:0]  k_layer_r, v_layer_r;
+  reg [2:0]  k_head_r,  v_head_r;
+  reg [7:0]  k_pos_r,   v_pos_r;
+  reg [3:0]  k_dim_r,   v_dim_r;
   reg        k_we_r;
   reg [15:0] k_wdata_r;
   reg        v_we_r;
   reg [15:0] v_wdata_r;
   always @(posedge clk) begin
-    kv_layer_r <= kv_layer;
-    kv_head_r  <= kv_head;
-    kv_pos_r   <= kv_pos;
-    kv_dim_r   <= kv_dim;
-    k_we_r     <= k_we;
-    k_wdata_r  <= k_wdata;
-    v_we_r     <= v_we;
-    v_wdata_r  <= v_wdata;
+    k_layer_r <= k_layer;
+    k_head_r  <= k_head;
+    k_pos_r   <= k_pos;
+    k_dim_r   <= k_dim;
+    k_we_r    <= k_we;
+    k_wdata_r <= k_wdata;
+    v_layer_r <= v_layer;
+    v_head_r  <= v_head;
+    v_pos_r   <= v_pos;
+    v_dim_r   <= v_dim;
+    v_we_r    <= v_we;
+    v_wdata_r <= v_wdata;
   end
 
   weight_store u_ws (
@@ -71,10 +75,10 @@ module tb_attention_stress;
   // K cache (fp16, DATA_W=16)
   kv_cache #(.DATA_W(16)) u_k_cache (
     .clk_i  (clk),
-    .layer_i(kv_layer_r),
-    .head_i (kv_head_r),
-    .pos_i  (kv_pos_r),
-    .dim_i  (kv_dim_r),
+    .layer_i(k_layer_r),
+    .head_i (k_head_r),
+    .pos_i  (k_pos_r),
+    .dim_i  (k_dim_r),
     .we_i   (k_we_r),
     .wdata_i(k_wdata_r),
     .rdata_o(k_rdata)
@@ -83,10 +87,10 @@ module tb_attention_stress;
   // V cache (fp16, DATA_W=16)
   kv_cache #(.DATA_W(16)) u_v_cache (
     .clk_i  (clk),
-    .layer_i(kv_layer_r),
-    .head_i (kv_head_r),
-    .pos_i  (kv_pos_r),
-    .dim_i  (kv_dim_r),
+    .layer_i(v_layer_r),
+    .head_i (v_head_r),
+    .pos_i  (v_pos_r),
+    .dim_i  (v_dim_r),
     .we_i   (v_we_r),
     .wdata_i(v_wdata_r),
     .rdata_o(v_rdata)
@@ -109,14 +113,18 @@ module tb_attention_stress;
     .w_scale_i  (w_scale),
     .k_we_o     (k_we),
     .k_wdata_o  (k_wdata),
+    .k_layer_o  (k_layer),
+    .k_head_o   (k_head),
+    .k_pos_o    (k_pos),
+    .k_dim_o    (k_dim),
     .k_rdata_i  (k_rdata),
     .v_we_o     (v_we),
     .v_wdata_o  (v_wdata),
+    .v_layer_o  (v_layer),
+    .v_head_o   (v_head),
+    .v_pos_o    (v_pos),
+    .v_dim_o    (v_dim),
     .v_rdata_i  (v_rdata),
-    .kv_layer_o (kv_layer),
-    .kv_head_o  (kv_head),
-    .kv_pos_o   (kv_pos),
-    .kv_dim_o   (kv_dim),
     .done_o     (done)
   );
 
