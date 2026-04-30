@@ -4,19 +4,11 @@
 // Autoregressive generation loop: output token feeds back as next input
 //
 // Protocol:
-//   Prompt token: set token_i, pulse start_i (generate_i=0)
+//   Prompt token: set token_i, pulse start_i with generate_i=0
 //     Runs embedding + 4 layers, populates KV cache. done_o pulses.
 //   Generate: set token_i, pulse start_i + generate_i
 //     Full pipeline through sampler. token_valid_o pulses with output token.
 //     Loops autoregressive until pos=255 or external stop.
-//
-// Weight store: head.weight reuses tok_emb (tensor_sel=0), weight tying
-//
-// Submodules: embedding, transformer_layer, layernorm (ln_f), matvec_fp16
-// (head proj, IN=128 OUT=256), sampler (fp16 argmax)
-//
-// Latency per token (generate mode): 258 + 4*layer + 656 + 32770 + 258 + 3 cycles
-//   P=0: ~536K cycles, P=255: ~1.1M cycles (layer latency grows with position)
 
 module transformer_top (
   input  wire        clk_i,
@@ -27,11 +19,22 @@ module transformer_top (
   input  wire        start_i,
   input  wire        generate_i,
 
-  // Weight store interface
+  // 8-bit weight store interface for pos_emb and layernorm
   output reg  [5:0]  w_sel_o,
   output reg  [15:0] w_addr_o,
   input  wire [7:0]  w_data_i,
   input  wire [15:0] w_scale_i,
+
+  // 64-bit packed weight store interface for per-layer attention and FF matvecs
+  output reg  [3:0]  w8_sel_o,
+  output reg  [15:0] w8_addr_o,
+  input  wire [63:0] w8_data_i,
+  input  wire [15:0] w8_scale_i,
+
+  // Dedicated tok_emb bus shared between embedding and head_proj
+  output reg  [11:0] tok_emb_addr_o,
+  input  wire [63:0] tok_emb_data_i,
+  input  wire [15:0] tok_emb_scale_i,
 
   // K cache (fp16)
   output reg         k_we_o,
@@ -84,6 +87,7 @@ module transformer_top (
   reg         emb_start;
   wire [5:0]  emb_w_sel;
   wire [15:0] emb_w_addr;
+  wire [11:0] emb_tok_addr;
   wire        emb_res_we;
   wire [6:0]  emb_res_waddr;
   wire [15:0] emb_res_wdata;
@@ -99,6 +103,9 @@ module transformer_top (
     .w_sel_o    (emb_w_sel),
     .w_addr_o   (emb_w_addr),
     .w_data_i   (w_data_i),
+    .tok_addr_o (emb_tok_addr),
+    .tok_data_i (tok_emb_data_i),
+    .tok_scale_i(tok_emb_scale_i),
     .res_we_o   (emb_res_we),
     .res_waddr_o(emb_res_waddr),
     .res_wdata_o(emb_res_wdata),
@@ -110,6 +117,8 @@ module transformer_top (
   reg          tl_start;
   wire [5:0]   tl_w_sel;
   wire [15:0]  tl_w_addr;
+  wire [3:0]   tl_w8_sel;
+  wire [15:0]  tl_w8_addr;
   wire [6:0]   tl_act_raddr;
   wire         tl_res_we;
   wire [6:0]   tl_res_waddr;
@@ -144,6 +153,10 @@ module transformer_top (
     .w_addr_o    (tl_w_addr),
     .w_data_i    (w_data_i),
     .w_scale_i   (w_scale_i),
+    .w8_sel_o    (tl_w8_sel),
+    .w8_addr_o   (tl_w8_addr),
+    .w8_data_i   (w8_data_i),
+    .w8_scale_i  (w8_scale_i),
     .k_we_o      (tl_k_we),
     .k_wdata_o   (tl_k_wdata),
     .k_layer_o   (tl_k_layer),
@@ -223,20 +236,20 @@ module transformer_top (
 
   // Head projection: reads act_ram[0:127], writes act_ram[0:255]
   reg          head_start;
-  wire [14:0]  head_addr;
+  wire [11:0]  head_w8_addr;
   wire [6:0]   head_act_raddr;
   wire         head_res_we;
   wire [7:0]   head_res_waddr;
   wire [15:0]  head_res_wdata;
   wire         head_done;
 
-  matvec_fp16 #(.IN_DIM(128), .OUT_DIM(256)) u_head_proj (
+  matvec_fp16_w8 #(.IN_DIM(128), .OUT_DIM(256)) u_head_proj (
     .clk_i        (clk_i),
     .rst_i        (rst_i),
     .start_i      (head_start),
-    .scale_i      (w_scale_i),
-    .weight_addr_o(head_addr),
-    .weight_data_i(w_data_i),
+    .scale_i      (tok_emb_scale_i),
+    .weight_addr_o(head_w8_addr),
+    .weight_data_i(tok_emb_data_i),
     .act_raddr_o  (head_act_raddr),
     .act_rdata_i  (act_ram[head_act_raddr]),
     .res_we_o     (head_res_we),
@@ -273,7 +286,9 @@ module transformer_top (
     .done_o       (samp_done)
   );
 
-  // Weight store mux (combinational)
+  // Combinational mux for the 8-bit weight store inputs.
+  // Embedding only drives w_* during S_EMBED for pos_emb access; tok_emb has
+  // its own dedicated bus
   always @(*) begin
     case (state)
       S_EMBED: begin
@@ -288,14 +303,34 @@ module transformer_top (
         w_sel_o  = lnf_w_sel;
         w_addr_o = {9'd0, lnf_w_addr};
       end
-      S_HEAD_PROJ: begin
-        w_sel_o  = 6'd0;
-        w_addr_o = {1'b0, head_addr};
-      end
       default: begin
         w_sel_o  = 6'd0;
         w_addr_o = 16'd0;
       end
+    endcase
+  end
+
+  // Combinational mux for the 64-bit packed weight store inputs.
+  // Only active during transformer_layer execution
+  always @(*) begin
+    case (state)
+      S_LAYER_START, S_LAYER_WAIT: begin
+        w8_sel_o  = tl_w8_sel;
+        w8_addr_o = tl_w8_addr;
+      end
+      default: begin
+        w8_sel_o  = 4'd0;
+        w8_addr_o = 16'd0;
+      end
+    endcase
+  end
+
+  // Mux the tok_emb bus address between embedding and head_proj
+  always @(*) begin
+    case (state)
+      S_EMBED:     tok_emb_addr_o = emb_tok_addr;
+      S_HEAD_PROJ: tok_emb_addr_o = head_w8_addr;
+      default:     tok_emb_addr_o = 12'd0;
     endcase
   end
 

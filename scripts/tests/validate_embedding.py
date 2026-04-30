@@ -12,8 +12,8 @@ import sys
 
 from rtl_ops import (
     DIM, MEM,
-    to_signed8, load_hex, parse_scale_bits,
-    fp16_to_float, fp16_from_int, fp16_mul, fp16_add,
+    to_signed8, load_hex, load_hex_w8, parse_scale_bits,
+    fp16_to_float, fp16_from_int, fp16_mul,
     rtl_embedding_fp16,
 )
 
@@ -56,7 +56,7 @@ if __name__ == "__main__":
             print(f"{name} not found: {path}")
             sys.exit(1)
 
-    tok_mem = load_hex(TOK_HEX)
+    tok_mem = load_hex_w8(TOK_HEX, DIM)
     pos_mem = load_hex(POS_HEX)
     print(f"Loaded tok_emb: {len(tok_mem)} bytes")
     print(f"Loaded pos_emb: {len(pos_mem)} bytes")

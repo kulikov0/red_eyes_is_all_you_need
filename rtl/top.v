@@ -89,7 +89,7 @@ module top (
     .busy_o (tx_busy)
   );
 
-  // Weight store
+  // 8-bit weight store for embedding, layernorm, head_proj
   wire [5:0]  w_sel;
   wire [15:0] w_addr;
   wire [7:0]  w_data;
@@ -101,6 +101,26 @@ module top (
     .addr_i      (w_addr),
     .data_o      (w_data),
     .scale_o     (w_scale)
+  );
+
+  // 64-bit packed weight store for per-layer matvecs and tok_emb (head_proj + embedding)
+  wire [3:0]  w8_sel;
+  wire [15:0] w8_addr;
+  wire [63:0] w8_data;
+  wire [15:0] w8_scale;
+  wire [11:0] tok_emb_addr;
+  wire [63:0] tok_emb_data;
+  wire [15:0] tok_emb_scale;
+
+  weight_store_w8 u_ws_w8 (
+    .clk_i           (clk),
+    .w8_sel_i        (w8_sel),
+    .w8_addr_i       (w8_addr),
+    .data_o          (w8_data),
+    .scale_o         (w8_scale),
+    .tok_emb_addr_i  (tok_emb_addr),
+    .tok_emb_data_o  (tok_emb_data),
+    .tok_emb_scale_o (tok_emb_scale)
   );
 
   // KV caches with independent address ports
@@ -153,6 +173,13 @@ module top (
     .w_addr_o    (w_addr),
     .w_data_i    (w_data),
     .w_scale_i   (w_scale),
+    .w8_sel_o        (w8_sel),
+    .w8_addr_o       (w8_addr),
+    .w8_data_i       (w8_data),
+    .w8_scale_i      (w8_scale),
+    .tok_emb_addr_o  (tok_emb_addr),
+    .tok_emb_data_i  (tok_emb_data),
+    .tok_emb_scale_i (tok_emb_scale),
     .k_we_o      (k_we),
     .k_wdata_o   (k_wdata),
     .k_layer_o   (k_layer),

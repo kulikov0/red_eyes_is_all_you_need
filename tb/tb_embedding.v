@@ -13,6 +13,9 @@ module tb_embedding;
   wire [5:0]  w_sel;
   wire [15:0] w_addr;
   wire [7:0]  w_data;
+  wire [11:0] tok_addr;
+  wire [63:0] tok_data;
+  wire [15:0] tok_scale;
   wire done;
 
   reg  [15:0] embed [0:127];
@@ -25,14 +28,13 @@ module tb_embedding;
       embed[emb_waddr] <= emb_wdata;
   end
 
-  reg [7:0] tok_mem [0:32767];
-  reg [7:0] pos_mem [0:32767];
+  reg [7:0]  pos_mem [0:32767];
+  reg [63:0] tok_mem [0:4095];
   initial begin
     $readmemh("/home/user/red_eyes_is_all_you_need/mem/tok_emb_weight.hex", tok_mem);
     $readmemh("/home/user/red_eyes_is_all_you_need/mem/pos_emb_weight.hex", pos_mem);
   end
 
-  // Mirror weight_store: input boundary register + BRAM read = 2-cycle latency
   reg [14:0] w_addr_r;
   reg [5:0]  w_sel_r;
   always @(posedge clk) begin
@@ -43,7 +45,6 @@ module tb_embedding;
   reg [7:0] w_data_r;
   always @(posedge clk) begin
     case (w_sel_r)
-      6'd0: w_data_r <= tok_mem[w_addr_r];
       6'd1: w_data_r <= pos_mem[w_addr_r];
       default: w_data_r <= 8'd0;
     endcase
@@ -53,11 +54,22 @@ module tb_embedding;
   reg [15:0] w_scale;
   always @(posedge clk) begin
     case (w_sel_r)
-      6'd0: w_scale <= 16'h1e50;
       6'd1: w_scale <= 16'h1ed6;
       default: w_scale <= 16'd0;
     endcase
   end
+
+  // Mirror weight_store_w8 tok_emb port: 1-cycle addr reg + 1-cycle BRAM
+  reg [11:0] tok_addr_r;
+  reg [63:0] tok_data_r;
+  reg [15:0] tok_scale_r;
+  always @(posedge clk) begin
+    tok_addr_r  <= tok_addr;
+    tok_data_r  <= tok_mem[tok_addr_r];
+    tok_scale_r <= 16'h1e50;
+  end
+  assign tok_data  = tok_data_r;
+  assign tok_scale = tok_scale_r;
 
   embedding #(
     .DIM(128)
@@ -71,6 +83,9 @@ module tb_embedding;
     .w_sel_o    (w_sel),
     .w_addr_o   (w_addr),
     .w_data_i   (w_data),
+    .tok_addr_o (tok_addr),
+    .tok_data_i (tok_data),
+    .tok_scale_i(tok_scale),
     .res_we_o   (emb_we),
     .res_waddr_o(emb_waddr),
     .res_wdata_o(emb_wdata),

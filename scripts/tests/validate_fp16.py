@@ -13,7 +13,7 @@ import math
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from rtl_ops import (
     fp16_add, fp16_mul, fp16_reduce_k4,
-    fp16_from_int, fp16_from_float, fp16_to_float, fp16_to_q167,
+    fp16_from_int, fp16_to_float, fp16_to_q167,
     q115_to_fp16 as rtl_q115_to_fp16, fp16_rsqrt_lut,
     load_lut16, to_signed8,
 )
@@ -317,27 +317,34 @@ def parse_and_validate():
         total_errors = print_section("fp16_rsqrt", rsqrt_results, total_errors)
         total_count += len(rsqrt_results)
 
-    # matvec_fp16
-    mv_pat = re.compile(r"MV([12]) \[(\d+)\] got=([0-9a-f]{4})")
+    # matvec_fp16 and matvec_fp16_w8
+    mv_pat = re.compile(r"MV([123]) \[(\d+)\] got=([0-9a-f]{4})")
     configs = {
-        "1": {"name": "4x4", "in_dim": 4, "out_dim": 4},
-        "2": {"name": "8x4", "in_dim": 4, "out_dim": 8},
+        "1": {"label": "matvec_fp16 4x4", "stem": "matvec_fp16_4x4",
+              "in_dim": 4, "out_dim": 4, "pack": None},
+        "2": {"label": "matvec_fp16 8x4", "stem": "matvec_fp16_8x4",
+              "in_dim": 4, "out_dim": 8, "pack": None},
+        "3": {"label": "matvec_fp16_w8 32x4", "stem": "matvec_fp16_w8_32x4",
+              "in_dim": 4, "out_dim": 32, "pack": "w8"},
     }
 
-    for mv_id in ["1", "2"]:
+    from rtl_ops import rtl_matvec_fp16, load_hex as load_hex_vals, load_hex_w8
+
+    for mv_id in ["1", "2", "3"]:
         cfg = configs[mv_id]
-        name = cfg["name"]
+        stem = cfg["stem"]
         in_dim = cfg["in_dim"]
         out_dim = cfg["out_dim"]
 
-        w_path = os.path.join(MEM, f"matvec_fp16_{name}_weights.hex")
-        iv_path = os.path.join(MEM, f"matvec_fp16_{name}_input.hex")
+        w_path = os.path.join(MEM, f"{stem}_weights.hex")
+        iv_path = os.path.join(MEM, f"{stem}_input.hex")
         if not os.path.exists(w_path):
             continue
 
-        from rtl_ops import rtl_matvec_fp16, load_hex as load_hex_vals
-
-        weights_u8 = load_hex_vals(w_path)[:out_dim * in_dim]
+        if cfg["pack"] == "w8":
+            weights_u8 = load_hex_w8(w_path, in_dim)[:out_dim * in_dim]
+        else:
+            weights_u8 = load_hex_vals(w_path)[:out_dim * in_dim]
 
         in_fp16 = []
         with open(iv_path) as ivf:
@@ -350,7 +357,6 @@ def parse_and_validate():
         scale_bits = 0x2C00  # fp16 0.0625
         rtl_vec = rtl_matvec_fp16(in_fp16, weights_u8, out_dim, in_dim, scale_bits)
 
-        # Ideal: float64 math
         scale_f = fp16_to_float(scale_bits)
         ideal_vec = []
         for r in range(out_dim):
@@ -371,8 +377,8 @@ def parse_and_validate():
                                    "ideal": ideal_vec[row]})
 
         if mv_results:
-            print(f"Test: matvec_fp16 {name} ({len(mv_results)} rows)")
-            total_errors = print_section(f"matvec_{name}", mv_results, total_errors)
+            print(f"Test: {cfg['label']} ({len(mv_results)} rows)")
+            total_errors = print_section(stem, mv_results, total_errors)
             total_count += len(mv_results)
 
     return total_errors, total_count

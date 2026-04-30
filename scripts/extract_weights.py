@@ -44,22 +44,40 @@ def verilog_param_name(stem):
     # Convert stem to UPPER_CASE Verilog localparam name for scale
     return "SCALE_" + stem.upper()
 
-# Generate tb/tb_weight_store.v with expected values derived from tensor data
+W8_SUFFIXES = (
+    "_attn_qkv_weight",
+    "_attn_proj_weight",
+    "_ff_up_weight",
+    "_ff_down_weight",
+    "tok_emb_weight",
+)
+
+def is_w8(stem):
+    return any(stem.endswith(s) for s in W8_SUFFIXES)
+
+
+# Generate tb/tb_weight_store.v with expected values derived from tensor data.
+# Skips w8 tensors since they live in weight_store_w8 and have a separate tb
 def generate_tb_weight_store(tensors):
-    n = len(tensors)
     log_path = f"{VIVADO_BASE}/logs/tb_weight_store.log"
 
-    # Build the three arrays from tensor data
+    # Tensor indices kept in weight_store after w8 split
+    keep = [(i, t) for i, t in enumerate(tensors) if not is_w8(t["stem"])]
+    n = len(keep)
+
+    # Compact arrays indexed 0..n-1; tsel_lut maps iteration index to tensor_sel
     lines_first = []
     lines_last  = []
     lines_addr  = []
-    for i, t in enumerate(tensors):
+    lines_tsel  = []
+    for j, (orig_i, t) in enumerate(keep):
         fb = t["data"][0]
         lb = t["data"][-1]
         la = t["size"] - 1
-        lines_first.append(f"exp_first[{i:2d}] = 8'h{fb:02x};")
-        lines_last.append(f"exp_last[{i:2d}] = 8'h{lb:02x};")
-        lines_addr.append(f"last_addr[{i:2d}] = 16'd{la};")
+        lines_first.append(f"exp_first[{j:2d}] = 8'h{fb:02x};")
+        lines_last.append(f"exp_last[{j:2d}] = 8'h{lb:02x};")
+        lines_addr.append(f"last_addr[{j:2d}] = 16'd{la};")
+        lines_tsel.append(f"tsel_lut[{j:2d}] = 6'd{orig_i};")
 
     def paired(items, indent="    "):
         out = []
@@ -93,10 +111,11 @@ module tb_weight_store;
   initial clk = 1'b0;
   always #5 clk = ~clk;
 
-  // Reference arrays: [tensor_sel] - expected first byte, last byte, last addr
+  // Reference arrays compacted to 0..n-1; tsel_lut maps to actual tensor_sel
   reg [7:0]  exp_first [0:{n-1}];
   reg [7:0]  exp_last  [0:{n-1}];
   reg [15:0] last_addr [0:{n-1}];
+  reg [5:0]  tsel_lut  [0:{n-1}];
 
   integer errors;
   integer i;
@@ -112,6 +131,9 @@ module tb_weight_store;
     // Last addresses (depth - 1)
 {paired(lines_addr)}
 
+    // Compact iteration index -> tensor_sel mapping
+{paired(lines_tsel)}
+
     errors = 0;
 
     // Open log file
@@ -125,19 +147,19 @@ module tb_weight_store;
 
     for (i = 0; i < {n}; i = i + 1) begin
       // Test first byte (addr 0)
-      tensor_sel = i[5:0];
+      tensor_sel = tsel_lut[i];
       addr       = 16'd0;
       @(posedge clk);
       @(posedge clk);
       #1;
 
       if (data !== exp_first[i]) begin
-        $display("FAIL tensor %0d first: got 0x%02x, expected 0x%02x", i, data, exp_first[i]);
-        $fwrite(fd, "FAIL tensor %0d first: got 0x%02x, expected 0x%02x\\n", i, data, exp_first[i]);
+        $display("FAIL tensor %0d first: got 0x%02x, expected 0x%02x", tsel_lut[i], data, exp_first[i]);
+        $fwrite(fd, "FAIL tensor %0d first: got 0x%02x, expected 0x%02x\\n", tsel_lut[i], data, exp_first[i]);
         errors = errors + 1;
       end else begin
-        $display("OK   tensor %0d  addr=0  data=0x%02x  scale=0x%08x", i, data, scale);
-        $fwrite(fd, "OK   tensor %0d  addr=0  data=0x%02x  scale=0x%08x\\n", i, data, scale);
+        $display("OK   tensor %0d  addr=0  data=0x%02x  scale=0x%08x", tsel_lut[i], data, scale);
+        $fwrite(fd, "OK   tensor %0d  addr=0  data=0x%02x  scale=0x%08x\\n", tsel_lut[i], data, scale);
       end
 
       // Test last byte (addr = last_addr)
@@ -148,13 +170,13 @@ module tb_weight_store;
 
       if (data !== exp_last[i]) begin
         $display("FAIL tensor %0d last: got 0x%02x, exp 0x%02x (addr=%0d)",
-                 i, data, exp_last[i], last_addr[i]);
+                 tsel_lut[i], data, exp_last[i], last_addr[i]);
         $fwrite(fd, "FAIL tensor %0d last: got 0x%02x, exp 0x%02x (addr=%0d)\\n",
-                i, data, exp_last[i], last_addr[i]);
+                tsel_lut[i], data, exp_last[i], last_addr[i]);
         errors = errors + 1;
       end else begin
-        $display("OK   tensor %0d  addr=%0d  data=0x%02x", i, last_addr[i], data);
-        $fwrite(fd, "OK   tensor %0d  addr=%0d  data=0x%02x\\n", i, last_addr[i], data);
+        $display("OK   tensor %0d  addr=%0d  data=0x%02x", tsel_lut[i], last_addr[i], data);
+        $fwrite(fd, "OK   tensor %0d  addr=%0d  data=0x%02x\\n", tsel_lut[i], last_addr[i], data);
       end
     end
 
@@ -221,15 +243,28 @@ def main():
             })
 
     for t in tensors:
-        # Skip individual LN files (packed into ln_params.hex instead)
+        # Skip individual LN files; packed into ln_params.hex instead
         if t["size"] == 128:
             continue
         hex_path = os.path.join(MEM, t["hex_file"])
-        with open(hex_path, "w") as hf:
-            for byte in t["data"]:
-                # int8 stored as unsigned byte; write as 2-digit hex
-                hf.write(f"{byte:02x}\n")
-        print(f"  wrote {hex_path} ({t['size']} bytes)")
+        if is_w8(t["stem"]):
+            out_dim, in_dim = t["shape"]
+            data = np.frombuffer(t["data"], dtype=np.uint8).reshape(out_dim, in_dim)
+            with open(hex_path, "w") as hf:
+                for g in range(out_dim // 8):
+                    rows = [data[8 * g + L] for L in range(8)]
+                    for c in range(in_dim):
+                        word = 0
+                        for L in range(8):
+                            word |= int(rows[L][c]) << (L * 8)
+                        hf.write(f"{word:016x}\n")
+            print(f"  wrote {hex_path}: {t['size']} bytes packed into {(out_dim // 8) * in_dim} 64-bit words")
+        else:
+            with open(hex_path, "w") as hf:
+                for byte in t["data"]:
+                    # int8 stored as unsigned byte; write as 2-digit hex
+                    hf.write(f"{byte:02x}\n")
+            print(f"  wrote {hex_path}: {t['size']} bytes")
 
     # Re-read hex and compare
     errors = 0
@@ -239,18 +274,43 @@ def main():
         hex_path = os.path.join(MEM, t["hex_file"])
         with open(hex_path, "r") as hf:
             lines = hf.read().strip().split("\n")
-        if len(lines) != t["size"]:
-            print(f"VERIFY FAIL: {t['name']} line count {len(lines)} != {t['size']}")
-            errors += 1
-            continue
-        for j, line in enumerate(lines):
-            val = int(line, 16)
-            if val != t["data"][j]:
-                print(f"VERIFY FAIL: {t['name']}[{j}] hex={val:02x} bin={t['data'][j]:02x}")
+        if is_w8(t["stem"]):
+            out_dim, in_dim = t["shape"]
+            expected_lines = (out_dim // 8) * in_dim
+            data = np.frombuffer(t["data"], dtype=np.uint8).reshape(out_dim, in_dim)
+            if len(lines) != expected_lines:
+                print(f"VERIFY FAIL: {t['name']} line count {len(lines)} != {expected_lines}")
                 errors += 1
-                break
+                continue
+            stop = False
+            for g in range(out_dim // 8):
+                rows = [data[8 * g + L] for L in range(8)]
+                for c in range(in_dim):
+                    j = g * in_dim + c
+                    word = int(lines[j], 16)
+                    expected = 0
+                    for L in range(8):
+                        expected |= int(rows[L][c]) << (L * 8)
+                    if word != expected:
+                        print(f"VERIFY FAIL: {t['name']} word[{j}] hex={word:016x} expected {expected:016x}")
+                        errors += 1
+                        stop = True
+                        break
+                if stop:
+                    break
+        else:
+            if len(lines) != t["size"]:
+                print(f"VERIFY FAIL: {t['name']} line count {len(lines)} != {t['size']}")
+                errors += 1
+                continue
+            for j, line in enumerate(lines):
+                val = int(line, 16)
+                if val != t["data"][j]:
+                    print(f"VERIFY FAIL: {t['name']}[{j}] hex={val:02x} bin={t['data'][j]:02x}")
+                    errors += 1
+                    break
     if errors:
-        print(f"\n=== {errors} verification errors ===", file=sys.stderr)
+        print(f"\n{errors} verification errors", file=sys.stderr)
         sys.exit(1)
     else:
         print(f"\nAll {len(tensors)} hex files verified")

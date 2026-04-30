@@ -61,6 +61,19 @@ def load_hex(path):
     return vals
 
 
+# Read an 8-way packed weight hex and unpack it back into a flat byte array.
+# Byte L of each 64-bit word holds row[8g + L][c] at the same column
+def load_hex_w8(path, in_dim):
+    vals = load_hex(path)
+    bytes_out = [0] * (len(vals) * 8)
+    for j, w in enumerate(vals):
+        g = j // in_dim
+        c = j % in_dim
+        for L in range(8):
+            bytes_out[(8 * g + L) * in_dim + c] = (w >> (L * 8)) & 0xFF
+    return bytes_out
+
+
 def load_lut16(path, signed=False):
     vals = []
     with open(path) as f:
@@ -73,21 +86,6 @@ def load_lut16(path, signed=False):
                 v -= 65536
             vals.append(v)
     return vals
-
-
-# Parse fp16 scale from weight_scales.vh, returns float
-def parse_scale(name, scales_vh=None):
-    if scales_vh is None:
-        scales_vh = SCALES_VH
-    pat = re.compile(
-        r"localparam\s+\[15:0\]\s+" + name + r"\s*=\s*16'h([0-9a-fA-F]{4})")
-    with open(scales_vh) as f:
-        for line in f:
-            m = pat.search(line)
-            if m:
-                bits = int(m.group(1), 16)
-                return fp16_to_float(bits)
-    raise ValueError(f"Scale {name} not found in {scales_vh}")
 
 
 # Parse fp16 scale, returns fp16 bit pattern (uint16)
@@ -220,7 +218,7 @@ def fp16_add(a, b):
     return normal
 
 
-# Matches RTL fp16_mul_comb in fp16_mac.v exactly
+# Matches RTL fp16_mul.v exactly
 def fp16_mul(a, b):
     a_s = (a >> 15) & 1
     a_e = (a >> 10) & 0x1F
@@ -267,10 +265,6 @@ def fp16_mul(a, b):
     if final_exp <= 0: return zero_r
     if final_exp >= 31: return inf_r
     return normal
-
-
-def fp16_mac(acc, a, b):
-    return fp16_add(acc, fp16_mul(a, b))
 
 
 # K=4 interleaved partial sums + balanced tree reduce
@@ -505,11 +499,6 @@ def load_gelu_pwl(path=None):
     slopes = [vals[15 + 2 * i] for i in range(16)]
     icepts = [vals[15 + 2 * i + 1] for i in range(16)]
     return breaks, slopes, icepts
-
-
-# FP16 unsigned magnitude comparison (works for positive fp16)
-def _fp16_ge(a_bits, b_bits):
-    return (a_bits & 0x7FFF) >= (b_bits & 0x7FFF)
 
 
 # FP16 PWL GELU matching RTL gelu.v bit-for-bit. Returns fp16 bits

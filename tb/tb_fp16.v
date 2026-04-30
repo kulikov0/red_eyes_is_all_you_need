@@ -125,7 +125,12 @@ module tb_fp16;
     $readmemh("/home/user/red_eyes_is_all_you_need/mem/matvec_fp16_4x4_weights.hex",
               mv1_wmem);
   end
-  always @(posedge clk) mv1_wdata <= mv1_wmem[mv1_waddr];
+  // Mimic weight_store: addr boundary reg followed by sync BRAM read
+  reg [$clog2(T1_OUT*T1_IN)-1:0] mv1_waddr_r;
+  always @(posedge clk) begin
+    mv1_waddr_r <= mv1_waddr;
+    mv1_wdata   <= mv1_wmem[mv1_waddr_r];
+  end
 
   reg  [15:0] mv1_act [0:T1_IN-1];
   reg  [15:0] mv1_res [0:T1_OUT-1];
@@ -163,7 +168,11 @@ module tb_fp16;
     $readmemh("/home/user/red_eyes_is_all_you_need/mem/matvec_fp16_8x4_weights.hex",
               mv2_wmem);
   end
-  always @(posedge clk) mv2_wdata <= mv2_wmem[mv2_waddr];
+  reg [$clog2(T2_OUT*T2_IN)-1:0] mv2_waddr_r;
+  always @(posedge clk) begin
+    mv2_waddr_r <= mv2_waddr;
+    mv2_wdata   <= mv2_wmem[mv2_waddr_r];
+  end
 
   reg  [15:0] mv2_act [0:T2_IN-1];
   reg  [15:0] mv2_res [0:T2_OUT-1];
@@ -189,6 +198,49 @@ module tb_fp16;
     $readmemh("/home/user/red_eyes_is_all_you_need/mem/matvec_fp16_8x4_expected.hex", mv2_exp);
   end
 
+  // matvec_fp16_w8 test 3: 32x4 packed
+  localparam T3_IN = 4, T3_OUT = 32;
+  localparam T3_WORDS = (T3_OUT / 8) * T3_IN;
+  reg                            mv3_start;
+  reg  [15:0]                    mv3_scale;
+  wire [$clog2(T3_WORDS)-1:0]    mv3_waddr;
+  wire                           mv3_done;
+  reg  [63:0] mv3_wmem [0:T3_WORDS-1];
+  reg  [63:0] mv3_wdata;
+  initial begin
+    $readmemh("/home/user/red_eyes_is_all_you_need/mem/matvec_fp16_w8_32x4_weights.hex",
+              mv3_wmem);
+  end
+  reg [$clog2(T3_WORDS)-1:0] mv3_waddr_r;
+  always @(posedge clk) begin
+    mv3_waddr_r <= mv3_waddr;
+    mv3_wdata   <= mv3_wmem[mv3_waddr_r];
+  end
+
+  reg  [15:0] mv3_act [0:T3_IN-1];
+  reg  [15:0] mv3_res [0:T3_OUT-1];
+  wire [$clog2(T3_IN)-1:0]  mv3_raddr;
+  wire                      mv3_rwe;
+  wire [$clog2(T3_OUT)-1:0] mv3_rwaddr;
+  wire [15:0]               mv3_rwdata;
+
+  matvec_fp16_w8 #(.IN_DIM(T3_IN), .OUT_DIM(T3_OUT)) u_mv3 (
+    .clk_i(clk), .rst_i(rst), .start_i(mv3_start),
+    .scale_i(mv3_scale),
+    .weight_addr_o(mv3_waddr), .weight_data_i(mv3_wdata),
+    .act_raddr_o(mv3_raddr), .act_rdata_i(mv3_act[mv3_raddr]),
+    .res_we_o(mv3_rwe), .res_waddr_o(mv3_rwaddr), .res_wdata_o(mv3_rwdata),
+    .done_o(mv3_done)
+  );
+  always @(posedge clk) if (mv3_rwe) mv3_res[mv3_rwaddr] <= mv3_rwdata;
+
+  reg [15:0] mv3_iv [0:T3_IN-1];
+  reg [15:0] mv3_exp [0:T3_OUT-1];
+  initial begin
+    $readmemh("/home/user/red_eyes_is_all_you_need/mem/matvec_fp16_w8_32x4_input.hex", mv3_iv);
+    $readmemh("/home/user/red_eyes_is_all_you_need/mem/matvec_fp16_w8_32x4_expected.hex", mv3_exp);
+  end
+
   initial begin
     rst = 1'b1;
     add_valid_in = 1'b0; add_a = 16'd0; add_b = 16'd0;
@@ -196,8 +248,8 @@ module tb_fp16;
     cvt_in = 8'd0; to_in = 16'd0; q167_in = 16'd0; q115_in = 16'd0;
     rsqrt_valid_in = 1'b0; rsqrt_in = 16'd0;
     red_clear = 1'b0; red_valid = 1'b0; red_flush = 1'b0; red_data = 16'd0;
-    mv1_start = 1'b0; mv2_start = 1'b0;
-    mv1_scale = 16'h2c00; mv2_scale = 16'h2c00;
+    mv1_start = 1'b0; mv2_start = 1'b0; mv3_start = 1'b0;
+    mv1_scale = 16'h2c00; mv2_scale = 16'h2c00; mv3_scale = 16'h2c00;
     errors = 0;
 
     fd = $fopen("/home/user/red_eyes_is_all_you_need/logs/tb_fp16.log", "w");
@@ -444,6 +496,30 @@ module tb_fp16;
         errors = errors + 1;
       end else begin
         $fwrite(fd, "MV2 [%0d] got=%04x exp=%04x OK\n", ri, got, expected);
+      end
+    end
+
+    // matvec_fp16_w8 test 3: 32x4 packed
+    #20;
+    $display("=== matvec_fp16_w8 32x4 ===");
+    $fwrite(fd, "=== matvec_fp16_w8 32x4 ===\n");
+    for (ri = 0; ri < T3_IN; ri = ri + 1)
+      mv3_act[ri] = mv3_iv[ri];
+    @(posedge clk);
+    mv3_start = 1'b1;
+    @(posedge clk);
+    mv3_start = 1'b0;
+    wait(mv3_done);
+    @(posedge clk); #1;
+    for (ri = 0; ri < T3_OUT; ri = ri + 1) begin : mv3_chk
+      reg [15:0] got, expected;
+      got = mv3_res[ri];
+      expected = mv3_exp[ri];
+      if (got !== expected) begin
+        $fwrite(fd, "MV3 [%0d] got=%04x exp=%04x FAIL\n", ri, got, expected);
+        errors = errors + 1;
+      end else begin
+        $fwrite(fd, "MV3 [%0d] got=%04x exp=%04x OK\n", ri, got, expected);
       end
     end
 

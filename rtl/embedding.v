@@ -1,13 +1,8 @@
 // Embedding lookup: tok_emb[token_id] * tok_scale + pos_emb[position] * pos_scale
 //
-// Reads 128 bytes of tok_emb from weight_store, then 128 bytes of pos_emb,
-// dequantizes each int8 to fp16 via pipelined fp16_mul, sums via pipelined fp16_add
-//
-// FSM: IDLE -> READ_TOK(129 cyc) -> READ_POS(134 cyc) -> DONE
-// Latency: 263 cycles
-//
-// TODO - optimize: add second data output to weight_store so tok_emb and
-// pos_emb can be read in parallel on the same addr, halving latency to ~130
+// tok_emb lives in weight_store_w8 packed; each 64-bit word holds rows
+// 8g..8g+7 at the same column, so embedding byte-extracts via token_id[2:0]
+// pos_emb lives in weight_store as bytes
 
 module embedding #(
   parameter DIM = 128
@@ -20,10 +15,15 @@ module embedding #(
 
   input  wire [15:0] w_scale_i,
 
-  // Weight store interface
+  // Byte weight store interface for pos_emb
   output reg  [5:0]  w_sel_o,
   output reg  [15:0] w_addr_o,
   input  wire [7:0]  w_data_i,
+
+  // 64-bit packed tok_emb bus from weight_store_w8
+  output reg  [11:0] tok_addr_o,
+  input  wire [63:0] tok_data_i,
+  input  wire [15:0] tok_scale_i,
 
   // Result write to shared RAM
   output reg                     res_we_o,
@@ -41,11 +41,11 @@ module embedding #(
 
   reg [1:0] state;
   reg [7:0] idx;
-  wire [7:0] prev = idx - 8'd1;
 
-  // Base addresses: token_id * 128, position * 128
-  wire [14:0] tok_base = {token_id_i[7:0], 7'd0};
+  // pos_emb base address: position * 128. tok_emb packed addr stride is
+  // {token_id[7:3], dim[6:0]} since each 64-bit word covers 8 rows at one col
   wire [14:0] pos_base = {position_i[7:0], 7'd0};
+  wire [11:0] tok_base = {token_id_i[7:3], 7'd0};
 
   // Buffer for tok_emb values read in first pass, used in second
   reg signed [7:0] tok_buf [0:DIM-1];
@@ -53,9 +53,14 @@ module embedding #(
   reg [15:0] tok_scale_r;
 
   // Boundary register on w_data_i breaks the long route from weight_store
-  // BRAM through the tensor_sel mux into our DSP. Adds one cycle of latency
+  // BRAM through the tensor_sel mux into our DSP
   reg signed [7:0] w_data_r;
   always @(posedge clk_i) w_data_r <= w_data_i;
+
+  // Boundary register on tok_data_i, then byte-extract using token_id[2:0]
+  reg [63:0] tok_data_r;
+  always @(posedge clk_i) tok_data_r <= tok_data_i;
+  wire signed [7:0] tok_byte = tok_data_r[token_id_i[2:0]*8 +: 8];
 
   wire [7:0] prev3 = idx - 8'd3;
 
@@ -123,6 +128,7 @@ module embedding #(
       res_we_o    <= 1'b0;
       w_sel_o     <= 6'd0;
       w_addr_o    <= 16'd0;
+      tok_addr_o  <= 12'd0;
       tok_scale_r <= 16'd0;
 
     end else begin
@@ -133,24 +139,23 @@ module embedding #(
 
         S_IDLE: begin
           if (start_i) begin
-            state    <= S_READ_TOK;
-            idx      <= 8'd0;
-            busy_o   <= 1'b1;
-            // Pre-issue first tok_emb address
-            w_sel_o  <= 6'd0;
-            w_addr_o <= {1'b0, tok_base};
+            state      <= S_READ_TOK;
+            idx        <= 8'd0;
+            busy_o     <= 1'b1;
+            // Pre-issue first tok_emb packed address
+            tok_addr_o <= tok_base;
           end
         end
 
-        // Read 128 bytes of tok_emb[token_id] into tok_buf via w_data_r
+        // Read 128 packed words at {token_id[7:3], dim} and byte-extract into tok_buf
         S_READ_TOK: begin
           if (idx == 8'd2)
-            tok_scale_r <= w_scale_i;
+            tok_scale_r <= tok_scale_i;
           if (idx < DIM[7:0] - 8'd1) begin
-            w_addr_o <= {1'b0, tok_base} + {8'd0, idx} + 16'd1;
+            tok_addr_o <= tok_base + {4'd0, idx} + 12'd1;
           end
           if (idx > 2) begin
-            tok_buf[prev3[6:0]] <= $signed(w_data_r);
+            tok_buf[prev3[6:0]] <= tok_byte;
           end
           idx <= idx + 8'd1;
           if (idx == DIM[7:0] + 8'd2) begin

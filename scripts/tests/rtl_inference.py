@@ -19,7 +19,7 @@ import time
 from rtl_ops import (
     DIM, N_LAYERS, VOCAB, MEM,
     fp16_to_float,
-    load_hex, load_lut16, load_gelu_pwl, parse_scale_bits,
+    load_hex, load_hex_w8, load_lut16, load_gelu_pwl, parse_scale_bits,
     rtl_forward_fp16,
 )
 
@@ -65,7 +65,7 @@ def load_all_resources():
     lut1 = load_lut16(os.path.join(MEM, "exp_lut1.hex"), signed=True)
     breaks, slopes, icepts = load_gelu_pwl()
 
-    tok_emb_w = load_hex(os.path.join(MEM, "tok_emb_weight.hex"))
+    tok_emb_w = load_hex_w8(os.path.join(MEM, "tok_emb_weight.hex"), 128)
     pos_emb_w = load_hex(os.path.join(MEM, "pos_emb_weight.hex"))
 
     tok_scale = parse_scale_bits("SCALE_TOK_EMB_WEIGHT")
@@ -75,10 +75,10 @@ def load_all_resources():
 
     layer_weights = {}
     for L in range(N_LAYERS):
-        qkv_w = load_hex(os.path.join(MEM, f"block{L}_attn_qkv_weight.hex"))
-        proj_w = load_hex(os.path.join(MEM, f"block{L}_attn_proj_weight.hex"))
-        ff_up_w = load_hex(os.path.join(MEM, f"block{L}_ff_up_weight.hex"))
-        ff_down_w = load_hex(os.path.join(MEM, f"block{L}_ff_down_weight.hex"))
+        qkv_w = load_hex_w8(os.path.join(MEM, f"block{L}_attn_qkv_weight.hex"), 128)
+        proj_w = load_hex_w8(os.path.join(MEM, f"block{L}_attn_proj_weight.hex"), 128)
+        ff_up_w = load_hex_w8(os.path.join(MEM, f"block{L}_ff_up_weight.hex"), 128)
+        ff_down_w = load_hex_w8(os.path.join(MEM, f"block{L}_ff_down_weight.hex"), 512)
         scales = {
             'ln1_gamma': parse_scale_bits(f"SCALE_BLOCK{L}_LN1_WEIGHT"),
             'ln1_beta':  parse_scale_bits(f"SCALE_BLOCK{L}_LN1_BIAS"),

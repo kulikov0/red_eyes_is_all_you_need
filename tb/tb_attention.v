@@ -21,9 +21,9 @@ module tb_attention;
       res_reg[res_waddr] <= res_wdata;
   end
 
-  wire [5:0]  w_sel;
-  wire [15:0] w_addr;
-  wire [7:0]  w_data;
+  wire [3:0]  w8_sel;
+  wire [15:0] w8_addr;
+  wire [63:0] w8_data;
 
   wire [1:0]  k_layer, v_layer;
   wire [2:0]  k_head, v_head;
@@ -62,15 +62,17 @@ module tb_attention;
 
   wire done;
 
-  wire [15:0] w_scale;
+  wire [15:0] w8_scale;
 
-  // Weight store
-  weight_store u_ws (
-    .clk_i       (clk),
-    .tensor_sel_i(w_sel),
-    .addr_i      (w_addr),
-    .data_o      (w_data),
-    .scale_o     (w_scale)
+  weight_store_w8 u_ws_w8 (
+    .clk_i          (clk),
+    .w8_sel_i       (w8_sel),
+    .w8_addr_i      (w8_addr),
+    .data_o         (w8_data),
+    .scale_o        (w8_scale),
+    .tok_emb_addr_i (12'd0),
+    .tok_emb_data_o (),
+    .tok_emb_scale_o()
   );
 
   // K cache (fp16, DATA_W=16)
@@ -109,10 +111,10 @@ module tb_attention;
     .res_we_o   (res_we),
     .res_waddr_o(res_waddr),
     .res_wdata_o(res_wdata),
-    .w_sel_o    (w_sel),
-    .w_addr_o   (w_addr),
-    .w_data_i   (w_data),
-    .w_scale_i  (w_scale),
+    .w8_sel_o   (w8_sel),
+    .w8_addr_o  (w8_addr),
+    .w8_data_i  (w8_data),
+    .w8_scale_i (w8_scale),
     .k_we_o     (k_we),
     .k_wdata_o  (k_wdata),
     .k_layer_o  (k_layer),
