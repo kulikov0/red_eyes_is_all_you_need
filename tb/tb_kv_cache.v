@@ -11,17 +11,15 @@ module tb_kv_cache;
   reg [7:0] pos;
   reg [3:0] dim;
 
-  // K cache (fp16, 16-bit)
   reg         k_we;
   reg  [15:0] k_wdata;
-  wire [15:0] k_rdata;
+  wire [31:0] k_rdata;
 
-  // V cache (fp16, 16-bit)
   reg         v_we;
   reg  [15:0] v_wdata;
-  wire [15:0] v_rdata;
+  wire [31:0] v_rdata;
 
-  kv_cache #(.DATA_W(16)) dut_k (
+  kv_cache dut_k (
     .clk_i  (clk),
     .layer_i(layer),
     .head_i (head),
@@ -32,7 +30,7 @@ module tb_kv_cache;
     .rdata_o(k_rdata)
   );
 
-  kv_cache #(.DATA_W(16)) dut_v (
+  kv_cache dut_v (
     .clk_i  (clk),
     .layer_i(layer),
     .head_i (head),
@@ -85,7 +83,7 @@ module tb_kv_cache;
     end
   endtask
 
-  // Read one K entry (2-cycle latency), log result
+  // Read one K entry, log the half selected by p[0]
   task read_k;
     input integer tnum;
     input [1:0] l;
@@ -102,11 +100,11 @@ module tb_kv_cache;
       @(posedge clk);
       @(posedge clk);
       $fwrite(fd, "T=%0d C=K L=%0d H=%0d P=%0d D=%0d OUT=%04x\n",
-              tnum, l, h, p, d, k_rdata);
+              tnum, l, h, p, d, p[0] ? k_rdata[31:16] : k_rdata[15:0]);
     end
   endtask
 
-  // Read one V entry (2-cycle latency), log result
+  // Read one V entry, log the half selected by p[0]
   task read_v;
     input integer tnum;
     input [1:0] l;
@@ -123,7 +121,7 @@ module tb_kv_cache;
       @(posedge clk);
       @(posedge clk);
       $fwrite(fd, "T=%0d C=V L=%0d H=%0d P=%0d D=%0d OUT=%04x\n",
-              tnum, l, h, p, d, v_rdata);
+              tnum, l, h, p, d, p[0] ? v_rdata[31:16] : v_rdata[15:0]);
     end
   endtask
 

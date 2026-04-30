@@ -27,10 +27,10 @@ module tb_transformer_top;
   wire [3:0]  k_dim,   v_dim;
   wire        k_we;
   wire [15:0] k_wdata;
-  wire [15:0] k_rdata;
+  wire [31:0] k_rdata;
   wire        v_we;
   wire [15:0] v_wdata;
-  wire [15:0] v_rdata;
+  wire [31:0] v_rdata;
 
   // DUT outputs
   wire [7:0]  out_token;
@@ -59,8 +59,7 @@ module tb_transformer_top;
     .tok_emb_scale_o (tok_emb_scale)
   );
 
-  // K cache (fp16, DATA_W=16)
-  kv_cache #(.DATA_W(16)) u_k_cache (
+  kv_cache u_k_cache (
     .clk_i  (clk),
     .layer_i(k_layer),
     .head_i (k_head),
@@ -71,8 +70,7 @@ module tb_transformer_top;
     .rdata_o(k_rdata)
   );
 
-  // V cache (fp16, DATA_W=16)
-  kv_cache #(.DATA_W(16)) u_v_cache (
+  kv_cache u_v_cache (
     .clk_i  (clk),
     .layer_i(v_layer),
     .head_i (v_head),
@@ -83,7 +81,6 @@ module tb_transformer_top;
     .rdata_o(v_rdata)
   );
 
-  // DUT
   transformer_top dut (
     .clk_i       (clk),
     .rst_i       (rst),

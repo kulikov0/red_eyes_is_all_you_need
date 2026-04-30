@@ -43,7 +43,7 @@ module transformer_top (
   output reg  [2:0]  k_head_o,
   output reg  [7:0]  k_pos_o,
   output reg  [3:0]  k_dim_o,
-  input  wire [15:0] k_rdata_i,
+  input  wire [31:0] k_rdata_i,
 
   // V cache (fp16)
   output reg         v_we_o,
@@ -52,7 +52,7 @@ module transformer_top (
   output reg  [2:0]  v_head_o,
   output reg  [7:0]  v_pos_o,
   output reg  [3:0]  v_dim_o,
-  input  wire [15:0] v_rdata_i,
+  input  wire [31:0] v_rdata_i,
 
   // Output
   output reg  [7:0]  token_o,

@@ -31,10 +31,10 @@ module tb_attention_stress;
   wire [3:0]  k_dim,   v_dim;
   wire        k_we;
   wire [15:0] k_wdata;
-  wire [15:0] k_rdata;
+  wire [31:0] k_rdata;
   wire        v_we;
   wire [15:0] v_wdata;
-  wire [15:0] v_rdata;
+  wire [31:0] v_rdata;
 
   wire done;
 
@@ -75,8 +75,7 @@ module tb_attention_stress;
     .tok_emb_scale_o()
   );
 
-  // K cache (fp16, DATA_W=16)
-  kv_cache #(.DATA_W(16)) u_k_cache (
+  kv_cache u_k_cache (
     .clk_i  (clk),
     .layer_i(k_layer_r),
     .head_i (k_head_r),
@@ -87,8 +86,7 @@ module tb_attention_stress;
     .rdata_o(k_rdata)
   );
 
-  // V cache (fp16, DATA_W=16)
-  kv_cache #(.DATA_W(16)) u_v_cache (
+  kv_cache u_v_cache (
     .clk_i  (clk),
     .layer_i(v_layer_r),
     .head_i (v_head_r),

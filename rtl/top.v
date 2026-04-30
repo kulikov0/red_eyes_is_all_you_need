@@ -126,13 +126,13 @@ module top (
   // KV caches with independent address ports
   wire        k_we, v_we;
   wire [15:0] k_wdata, v_wdata;
-  wire [15:0] k_rdata, v_rdata;
+  wire [31:0] k_rdata, v_rdata;
   wire [1:0]  k_layer, v_layer;
   wire [2:0]  k_head, v_head;
   wire [7:0]  k_pos, v_pos;
   wire [3:0]  k_dim, v_dim;
 
-  kv_cache #(.DATA_W(16)) u_kcache (
+  kv_cache u_kcache (
     .clk_i  (clk),
     .layer_i(k_layer),
     .head_i (k_head),
@@ -143,7 +143,7 @@ module top (
     .rdata_o(k_rdata)
   );
 
-  kv_cache #(.DATA_W(16)) u_vcache (
+  kv_cache u_vcache (
     .clk_i  (clk),
     .layer_i(v_layer),
     .head_i (v_head),

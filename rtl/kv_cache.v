@@ -1,45 +1,46 @@
 // KV cache: 32 BRAM banks for key or value storage across all layers and heads
 //
-// Organization: 4 layers x 8 heads = 32 banks
-// Each bank: 256 positions x 16 dimensions = 4096 entries (DATA_W bits each)
-// Instantiate separately for K and V, both with DATA_W=16 (fp16)
-// Each bank uses 2 BRAM36 (4096 x 16-bit), total 64 BRAM36 per cache instance
+// Organization: 4 layers x 8 heads = 32 banks.
+// Each bank packs 2 consecutive positions into one 32-bit word so attention
+// can read both halves in a single cycle for per-position 2-way parallelism.
+// Bank depth: 128 pair_idx x 16 dim = 2048 entries x 32-bit
 //
-// Bank select: {layer[1:0], head[2:0]} (5 bits)
-// Bank address: {pos[7:0], dim[3:0]} (12 bits)
-// Read latency: 2 cycles (registered addr + registered sel mux)
+// Write side stays 16-bit per access. The cache derives pair_idx from
+// pos_i[7:1] and selects the lower or upper half via byte-write-enable
+// based on pos_i[0]. Read side returns the 32-bit pair {odd_pos, even_pos}
+//
+// Bank select: {layer[1:0], head[2:0]}. Read latency: 2 cycles
 
-module kv_cache #(
-  parameter DATA_W = 16
-) (
-  input  wire              clk_i,
-  input  wire [1:0]        layer_i,
-  input  wire [2:0]        head_i,
-  input  wire [7:0]        pos_i,
-  input  wire [3:0]        dim_i,
-  input  wire              we_i,
-  input  wire [DATA_W-1:0] wdata_i,
-  output wire [DATA_W-1:0] rdata_o
+module kv_cache (
+  input  wire        clk_i,
+  input  wire [1:0]  layer_i,
+  input  wire [2:0]  head_i,
+  input  wire [7:0]  pos_i,
+  input  wire [3:0]  dim_i,
+  input  wire        we_i,
+  input  wire [15:0] wdata_i,
+  output wire [31:0] rdata_o
 );
 
-  wire [4:0]  sel  = {layer_i, head_i};
-  wire [11:0] addr = {pos_i, dim_i};
+  wire [4:0]  sel       = {layer_i, head_i};
+  wire [10:0] addr      = {pos_i[7:1], dim_i};
+  wire [31:0] wdata_dup = {wdata_i, wdata_i};
+  wire [3:0]  bwe       = pos_i[0] ? 4'b1100 : 4'b0011;
 
-  // Registered sel for output mux (1-cycle BRAM latency alignment)
   reg [4:0] sel_r;
   always @(posedge clk_i) sel_r <= sel;
 
-  // 32 BRAM banks
-  wire [DATA_W-1:0] bank_rdata [0:31];
+  wire [31:0] bank_rdata [0:31];
 
   genvar g;
   generate
     for (g = 0; g < 32; g = g + 1) begin : banks
-      kv_ram #(.DEPTH(4096), .DATA_W(DATA_W)) u_ram (
+      kv_ram #(.DEPTH(2048), .DATA_W(32)) u_ram (
         .clk_i  (clk_i),
         .addr_i (addr),
         .we_i   (we_i && sel == g[4:0]),
-        .wdata_i(wdata_i),
+        .bwe_i  (bwe),
+        .wdata_i(wdata_dup),
         .rdata_o(bank_rdata[g])
       );
     end
