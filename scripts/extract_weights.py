@@ -44,7 +44,7 @@ def verilog_param_name(stem):
     # Convert stem to UPPER_CASE Verilog localparam name for scale
     return "SCALE_" + stem.upper()
 
-W8_SUFFIXES = (
+W16_SUFFIXES = (
     "_attn_qkv_weight",
     "_attn_proj_weight",
     "_ff_up_weight",
@@ -52,17 +52,17 @@ W8_SUFFIXES = (
     "tok_emb_weight",
 )
 
-def is_w8(stem):
-    return any(stem.endswith(s) for s in W8_SUFFIXES)
+def is_w16(stem):
+    return any(stem.endswith(s) for s in W16_SUFFIXES)
 
 
 # Generate tb/tb_weight_store.v with expected values derived from tensor data.
-# Skips w8 tensors since they live in weight_store_w8 and have a separate tb
+# Skips w16 tensors since they live in weight_store_w16 and have a separate tb
 def generate_tb_weight_store(tensors):
     log_path = f"{VIVADO_BASE}/logs/tb_weight_store.log"
 
-    # Tensor indices kept in weight_store after w8 split
-    keep = [(i, t) for i, t in enumerate(tensors) if not is_w8(t["stem"])]
+    # Tensor indices kept in weight_store after w16 split
+    keep = [(i, t) for i, t in enumerate(tensors) if not is_w16(t["stem"])]
     n = len(keep)
 
     # Compact arrays indexed 0..n-1; tsel_lut maps iteration index to tensor_sel
@@ -247,18 +247,18 @@ def main():
         if t["size"] == 128:
             continue
         hex_path = os.path.join(MEM, t["hex_file"])
-        if is_w8(t["stem"]):
+        if is_w16(t["stem"]):
             out_dim, in_dim = t["shape"]
             data = np.frombuffer(t["data"], dtype=np.uint8).reshape(out_dim, in_dim)
             with open(hex_path, "w") as hf:
-                for g in range(out_dim // 8):
-                    rows = [data[8 * g + L] for L in range(8)]
+                for g in range(out_dim // 16):
+                    rows = [data[16 * g + L] for L in range(16)]
                     for c in range(in_dim):
                         word = 0
-                        for L in range(8):
+                        for L in range(16):
                             word |= int(rows[L][c]) << (L * 8)
-                        hf.write(f"{word:016x}\n")
-            print(f"  wrote {hex_path}: {t['size']} bytes packed into {(out_dim // 8) * in_dim} 64-bit words")
+                        hf.write(f"{word:032x}\n")
+            print(f"  wrote {hex_path}: {t['size']} bytes packed into {(out_dim // 16) * in_dim} 128-bit words")
         else:
             with open(hex_path, "w") as hf:
                 for byte in t["data"]:
@@ -274,25 +274,25 @@ def main():
         hex_path = os.path.join(MEM, t["hex_file"])
         with open(hex_path, "r") as hf:
             lines = hf.read().strip().split("\n")
-        if is_w8(t["stem"]):
+        if is_w16(t["stem"]):
             out_dim, in_dim = t["shape"]
-            expected_lines = (out_dim // 8) * in_dim
+            expected_lines = (out_dim // 16) * in_dim
             data = np.frombuffer(t["data"], dtype=np.uint8).reshape(out_dim, in_dim)
             if len(lines) != expected_lines:
                 print(f"VERIFY FAIL: {t['name']} line count {len(lines)} != {expected_lines}")
                 errors += 1
                 continue
             stop = False
-            for g in range(out_dim // 8):
-                rows = [data[8 * g + L] for L in range(8)]
+            for g in range(out_dim // 16):
+                rows = [data[16 * g + L] for L in range(16)]
                 for c in range(in_dim):
                     j = g * in_dim + c
                     word = int(lines[j], 16)
                     expected = 0
-                    for L in range(8):
+                    for L in range(16):
                         expected |= int(rows[L][c]) << (L * 8)
                     if word != expected:
-                        print(f"VERIFY FAIL: {t['name']} word[{j}] hex={word:016x} expected {expected:016x}")
+                        print(f"VERIFY FAIL: {t['name']} word[{j}] hex={word:032x} expected {expected:032x}")
                         errors += 1
                         stop = True
                         break

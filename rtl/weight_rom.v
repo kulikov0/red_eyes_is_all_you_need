@@ -1,8 +1,8 @@
-// Synchronous-read ROM for large weight tensors, maps to BRAM
+// Synchronous-read ROM for large weight tensors, maps to BRAM.
 //
-// Auto-instantiated by weight_store and weight_store_w8. DATA_W=8 for byte
-// ROMs; DATA_W=64 for the 8-way packed matvec ROMs that hold 8 adjacent rows
-// at the same column in one BRAM word
+// Auto-instantiated by weight_store and weight_store_w16. DATA_W=8 for byte
+// ROMs, DATA_W=128 for the 16-way packed matvec ROMs that hold 16 adjacent
+// rows at the same column in one BRAM word.
 
 module weight_rom #(
   parameter DEPTH    = 1024,

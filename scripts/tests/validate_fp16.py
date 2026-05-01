@@ -317,18 +317,18 @@ def parse_and_validate():
         total_errors = print_section("fp16_rsqrt", rsqrt_results, total_errors)
         total_count += len(rsqrt_results)
 
-    # matvec_fp16 and matvec_fp16_w8
+    # matvec_fp16 and matvec_fp16_w16
     mv_pat = re.compile(r"MV([123]) \[(\d+)\] got=([0-9a-f]{4})")
     configs = {
         "1": {"label": "matvec_fp16 4x4", "stem": "matvec_fp16_4x4",
               "in_dim": 4, "out_dim": 4, "pack": None},
         "2": {"label": "matvec_fp16 8x4", "stem": "matvec_fp16_8x4",
               "in_dim": 4, "out_dim": 8, "pack": None},
-        "3": {"label": "matvec_fp16_w8 32x4", "stem": "matvec_fp16_w8_32x4",
-              "in_dim": 4, "out_dim": 32, "pack": "w8"},
+        "3": {"label": "matvec_fp16_w16 64x4", "stem": "matvec_fp16_w16_64x4",
+              "in_dim": 4, "out_dim": 64, "pack": "w16"},
     }
 
-    from rtl_ops import rtl_matvec_fp16, load_hex as load_hex_vals, load_hex_w8
+    from rtl_ops import rtl_matvec_fp16, load_hex as load_hex_vals, load_hex_w16
 
     for mv_id in ["1", "2", "3"]:
         cfg = configs[mv_id]
@@ -341,8 +341,8 @@ def parse_and_validate():
         if not os.path.exists(w_path):
             continue
 
-        if cfg["pack"] == "w8":
-            weights_u8 = load_hex_w8(w_path, in_dim)[:out_dim * in_dim]
+        if cfg["pack"] == "w16":
+            weights_u8 = load_hex_w16(w_path, in_dim)[:out_dim * in_dim]
         else:
             weights_u8 = load_hex_vals(w_path)[:out_dim * in_dim]
 

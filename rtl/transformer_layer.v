@@ -1,14 +1,14 @@
-// Single transformer block: LN1 -> Attention -> Residual -> LN2 -> FF -> Residual
+// Single transformer block: LN1, Attention, Residual, LN2, FF, Residual.
 //
-// W8A16: int8 weights in BRAM, fp16 activations throughout
-// Two weight buses: 8-bit shared bank for LN; 64-bit packed bank for the per-layer
-// matvec_fp16_w8 instances inside attention and FF
+// W8A16: int8 weights in BRAM, fp16 activations throughout. Two weight buses:
+// 8-bit shared bank for LN, 128-bit packed bank for the per-layer
+// matvec_fp16_w16 instances inside attention and FF.
 //
 // w_sel_o tensor_sel mapping per layer L = {layer_r, 3'b000}:
 //   LN1 gamma = L+2, LN1 beta = L+3
 //   LN2 gamma = L+6, LN2 beta = L+7
 //
-// w8_sel_o encoding: {layer, type}
+// w16_sel_o encoding: {layer, type}
 //   type 00: qkv,    01: proj    driven by attention
 //   type 10: ff_up,  11: ff_down driven by transformer_layer
 
@@ -31,11 +31,11 @@ module transformer_layer (
   input  wire [7:0]    w_data_i,
   input  wire [15:0]   w_scale_i,
 
-  // 64-bit packed weight store interface for attention and FF matvecs
-  output reg  [3:0]    w8_sel_o,
-  output reg  [15:0]   w8_addr_o,
-  input  wire [63:0]   w8_data_i,
-  input  wire [15:0]   w8_scale_i,
+  // 128-bit packed weight store interface for attention and FF matvecs
+  output reg  [3:0]    w16_sel_o,
+  output reg  [15:0]   w16_addr_o,
+  input  wire [127:0]  w16_data_i,
+  input  wire [15:0]   w16_scale_i,
 
   // K cache (fp16)
   output wire          k_we_o,
@@ -125,8 +125,8 @@ module transformer_layer (
 
   // Attention: reads/writes act_ram[0:127]
   reg          attn_start;
-  wire [3:0]   attn_w8_sel;
-  wire [15:0]  attn_w8_addr;
+  wire [3:0]   attn_w16_sel;
+  wire [15:0]  attn_w16_addr;
   wire [6:0]   attn_act_raddr;
   wire         attn_res_we;
   wire [6:0]   attn_res_waddr;
@@ -157,10 +157,10 @@ module transformer_layer (
     .res_we_o    (attn_res_we),
     .res_waddr_o (attn_res_waddr),
     .res_wdata_o (attn_res_wdata),
-    .w8_sel_o    (attn_w8_sel),
-    .w8_addr_o   (attn_w8_addr),
-    .w8_data_i   (w8_data_i),
-    .w8_scale_i  (w8_scale_i),
+    .w16_sel_o   (attn_w16_sel),
+    .w16_addr_o  (attn_w16_addr),
+    .w16_data_i  (w16_data_i),
+    .w16_scale_i (w16_scale_i),
     .k_we_o      (attn_k_we),
     .k_wdata_o   (attn_k_wdata),
     .k_layer_o   (attn_k_layer),
@@ -195,20 +195,20 @@ module transformer_layer (
 
   // FF_up matvec: 128 -> 512, reads act_ram[0:127], writes act_ram[0:511]
   reg          ff_up_start;
-  wire [12:0]  ff_up_addr;
+  wire [11:0]  ff_up_addr;
   wire [6:0]   ff_up_act_raddr;
   wire         ff_up_res_we;
   wire [8:0]   ff_up_res_waddr;
   wire [15:0]  ff_up_res_wdata;
   wire         ff_up_done;
 
-  matvec_fp16_w8 #(.IN_DIM(128), .OUT_DIM(512)) u_ff_up (
+  matvec_fp16_w16 #(.IN_DIM(128), .OUT_DIM(512)) u_ff_up (
     .clk_i        (clk_i),
     .rst_i        (rst_i),
     .start_i      (ff_up_start),
-    .scale_i      (w8_scale_i),
+    .scale_i      (w16_scale_i),
     .weight_addr_o(ff_up_addr),
-    .weight_data_i(w8_data_i),
+    .weight_data_i(w16_data_i),
     .act_raddr_o  (ff_up_act_raddr),
     .act_rdata_i  (act_ram[ff_up_act_raddr]),
     .res_we_o     (ff_up_res_we),
@@ -220,20 +220,20 @@ module transformer_layer (
 
   // FF_down matvec: 512 -> 128, reads act_ram[0:511], writes act_ram[0:127]
   reg          ff_down_start;
-  wire [12:0]  ff_down_addr;
+  wire [11:0]  ff_down_addr;
   wire [8:0]   ff_down_act_raddr;
   wire         ff_down_res_we;
   wire [6:0]   ff_down_res_waddr;
   wire [15:0]  ff_down_res_wdata;
   wire         ff_down_done;
 
-  matvec_fp16_w8 #(.IN_DIM(512), .OUT_DIM(128)) u_ff_down (
+  matvec_fp16_w16 #(.IN_DIM(512), .OUT_DIM(128)) u_ff_down (
     .clk_i        (clk_i),
     .rst_i        (rst_i),
     .start_i      (ff_down_start),
-    .scale_i      (w8_scale_i),
+    .scale_i      (w16_scale_i),
     .weight_addr_o(ff_down_addr),
-    .weight_data_i(w8_data_i),
+    .weight_data_i(w16_data_i),
     .act_raddr_o  (ff_down_act_raddr),
     .act_rdata_i  (act_ram[ff_down_act_raddr]),
     .res_we_o     (ff_down_res_we),
@@ -292,25 +292,25 @@ module transformer_layer (
     endcase
   end
 
-  // 64-bit packed weight store mux. w8_sel = {layer, type}
+  // 128-bit packed weight store mux. w16_sel = {layer, type}.
   // type 00=qkv, 01=proj, 10=ff_up, 11=ff_down
   always @(*) begin
     case (state)
       S_ATTN: begin
-        w8_sel_o  = attn_w8_sel;
-        w8_addr_o = attn_w8_addr;
+        w16_sel_o  = attn_w16_sel;
+        w16_addr_o = attn_w16_addr;
       end
       S_FF_UP: begin
-        w8_sel_o  = {layer_r, 2'b10};
-        w8_addr_o = {3'b000, ff_up_addr};
+        w16_sel_o  = {layer_r, 2'b10};
+        w16_addr_o = {4'b0000, ff_up_addr};
       end
       S_FF_DOWN: begin
-        w8_sel_o  = {layer_r, 2'b11};
-        w8_addr_o = {3'b000, ff_down_addr};
+        w16_sel_o  = {layer_r, 2'b11};
+        w16_addr_o = {4'b0000, ff_down_addr};
       end
       default: begin
-        w8_sel_o  = 4'd0;
-        w8_addr_o = 16'd0;
+        w16_sel_o  = 4'd0;
+        w16_addr_o = 16'd0;
       end
     endcase
   end

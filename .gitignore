@@ -18,6 +18,7 @@ project/project.gen/
 *.wdb
 
 # Build outputs
+build/
 *.bit
 *.ltx
 *.dcp

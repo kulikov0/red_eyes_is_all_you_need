@@ -14,11 +14,11 @@ module tb_transformer_top;
   wire [5:0]  w_sel;
   wire [15:0] w_addr;
   wire [7:0]  w_data;
-  wire [3:0]  w8_sel;
-  wire [15:0] w8_addr;
-  wire [63:0] w8_data;
-  wire [11:0] tok_emb_addr;
-  wire [63:0] tok_emb_data;
+  wire [3:0]   w16_sel;
+  wire [15:0]  w16_addr;
+  wire [127:0] w16_data;
+  wire [10:0]  tok_emb_addr;
+  wire [127:0] tok_emb_data;
   wire [15:0] tok_emb_scale;
   // DUT <-> KV caches, independent address ports
   wire [1:0]  k_layer, v_layer;
@@ -38,7 +38,7 @@ module tb_transformer_top;
   wire        done;
 
   wire [15:0] w_scale;
-  wire [15:0] w8_scale;
+  wire [15:0] w16_scale;
 
   weight_store u_ws (
     .clk_i       (clk),
@@ -48,12 +48,12 @@ module tb_transformer_top;
     .scale_o     (w_scale)
   );
 
-  weight_store_w8 u_ws_w8 (
+  weight_store_w16 u_ws_w16 (
     .clk_i           (clk),
-    .w8_sel_i        (w8_sel),
-    .w8_addr_i       (w8_addr),
-    .data_o          (w8_data),
-    .scale_o         (w8_scale),
+    .w16_sel_i       (w16_sel),
+    .w16_addr_i      (w16_addr),
+    .data_o          (w16_data),
+    .scale_o         (w16_scale),
     .tok_emb_addr_i  (tok_emb_addr),
     .tok_emb_data_o  (tok_emb_data),
     .tok_emb_scale_o (tok_emb_scale)
@@ -91,10 +91,10 @@ module tb_transformer_top;
     .w_addr_o    (w_addr),
     .w_data_i    (w_data),
     .w_scale_i   (w_scale),
-    .w8_sel_o        (w8_sel),
-    .w8_addr_o       (w8_addr),
-    .w8_data_i       (w8_data),
-    .w8_scale_i      (w8_scale),
+    .w16_sel_o       (w16_sel),
+    .w16_addr_o      (w16_addr),
+    .w16_data_i      (w16_data),
+    .w16_scale_i     (w16_scale),
     .tok_emb_addr_o  (tok_emb_addr),
     .tok_emb_data_i  (tok_emb_data),
     .tok_emb_scale_i (tok_emb_scale),

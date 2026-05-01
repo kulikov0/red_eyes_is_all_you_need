@@ -1,17 +1,15 @@
-// Multi-head self-attention for single-token autoregressive inference (W8A16)
+// Multi-head self-attention for single-token autoregressive inference, W8A16.
 //
-// Flow: QKV matvec_fp16_w8 -> KV store -> 8x(score, softmax, AV) -> proj matvec_fp16_w8
+// Flow: QKV matvec_fp16_w16 -> KV store -> 8 heads of score, softmax, AV -> proj.
 //
 // Precision:
-//   Weights: int8 in weight_store_w8, dequanted to fp16 via scale
-//   QKV: fp16 output (128 Q + 128 K + 128 V)
-//   K/V cache: fp16, stored directly
-//   Score: fp16 dot(Q,K) * 1/sqrt(16), converted to Q16.7 for softmax
-//   Softmax: Q16.7 input (IN_W=24), Q1.15 output (bipartite LUT)
-//   AV: Q1.15 -> fp16, then fp16 accumulation
-//   Proj: matvec_fp16_w8, fp16 output
+//   Weights: int8 in weight_store_w16, dequanted to fp16 via scale.
+//   K/V cache: fp16.
+//   Score: fp16 dot(Q,K) * 1/sqrt(16), converted to Q16.7 for softmax.
+//   Softmax: Q16.7 input IN_W=24, Q1.15 output via bipartite LUT.
+//   AV: Q1.15 -> fp16, then fp16 accumulation.
 //
-// w8_sel encoding for the per-layer weight bus: {layer_i, type}
+// w16_sel encoding for the per-layer weight bus: {layer_i, type}
 //   type 00: qkv, type 01: proj
 
 module attention (
@@ -27,11 +25,11 @@ module attention (
   output reg  [6:0]    res_waddr_o,
   output reg  [15:0]   res_wdata_o,
 
-  // 64-bit packed weight store. qkv and proj live in weight_store_w8
-  output wire [3:0]    w8_sel_o,
-  output wire [15:0]   w8_addr_o,
-  input  wire [63:0]   w8_data_i,
-  input  wire [15:0]   w8_scale_i,
+  // 128-bit packed weight store. qkv and proj live in weight_store_w16
+  output wire [3:0]    w16_sel_o,
+  output wire [15:0]   w16_addr_o,
+  input  wire [127:0]  w16_data_i,
+  input  wire [15:0]   w16_scale_i,
 
   // K cache addr is separate from V so score and AV can run in parallel.
   // KV cache packs 2 consecutive positions per 32-bit word; rdata returns
@@ -113,20 +111,20 @@ module attention (
 
   // QKV matvec: reads from shared RAM, writes to qkv_ram
   reg         qkv_start;
-  wire [12:0] qkv_addr;
+  wire [11:0] qkv_addr;
   wire [6:0]  qkv_act_raddr;
   wire        qkv_res_we;
   wire [8:0]  qkv_res_waddr;
   wire [15:0] qkv_res_wdata;
   wire        qkv_done;
 
-  matvec_fp16_w8 #(.IN_DIM(128), .OUT_DIM(384)) u_qkv (
+  matvec_fp16_w16 #(.IN_DIM(128), .OUT_DIM(384)) u_qkv (
     .clk_i        (clk_i),
     .rst_i        (rst_i),
     .start_i      (qkv_start),
-    .scale_i      (w8_scale_i),
+    .scale_i      (w16_scale_i),
     .weight_addr_o(qkv_addr),
-    .weight_data_i(w8_data_i),
+    .weight_data_i(w16_data_i),
     .act_raddr_o  (qkv_act_raddr),
     .act_rdata_i  (act_rdata_i),
     .res_we_o     (qkv_res_we),
@@ -143,20 +141,20 @@ module attention (
 
   // Proj matvec: reads from head_ram, writes to shared RAM
   reg          proj_start;
-  wire [10:0]  proj_addr;
+  wire [9:0]   proj_addr;
   wire [6:0]   proj_act_raddr;
   wire         proj_res_we;
   wire [6:0]   proj_res_waddr;
   wire [15:0]  proj_res_wdata;
   wire         proj_done;
 
-  matvec_fp16_w8 #(.IN_DIM(128), .OUT_DIM(128)) u_proj (
+  matvec_fp16_w16 #(.IN_DIM(128), .OUT_DIM(128)) u_proj (
     .clk_i        (clk_i),
     .rst_i        (rst_i),
     .start_i      (proj_start),
-    .scale_i      (w8_scale_i),
+    .scale_i      (w16_scale_i),
     .weight_addr_o(proj_addr),
-    .weight_data_i(w8_data_i),
+    .weight_data_i(w16_data_i),
     .act_raddr_o  (proj_act_raddr),
     .act_rdata_i  (head_ram[proj_act_raddr]),
     .res_we_o     (proj_res_we),
@@ -455,26 +453,25 @@ module attention (
     .sum_o(av_mac_sum)
   );
 
-  // Combinational w8 weight store address mux. w8_sel = {layer, type}
-  // where type=00 is qkv and type=01 is proj
-  reg [3:0]  w8_sel_r;
-  reg [15:0] w8_addr_r;
-  assign w8_sel_o  = w8_sel_r;
-  assign w8_addr_o = w8_addr_r;
+  // w16_sel = {layer, type}, type=00 is qkv, type=01 is proj
+  reg [3:0]  w16_sel_r;
+  reg [15:0] w16_addr_r;
+  assign w16_sel_o  = w16_sel_r;
+  assign w16_addr_o = w16_addr_r;
 
   always @(*) begin
     case (state)
       S_QKV: begin
-        w8_sel_r  = {layer_r, 2'b00};
-        w8_addr_r = {3'b000, qkv_addr};
+        w16_sel_r  = {layer_r, 2'b00};
+        w16_addr_r = {4'b0000, qkv_addr};
       end
       S_PROJ: begin
-        w8_sel_r  = {layer_r, 2'b01};
-        w8_addr_r = {5'b00000, proj_addr};
+        w16_sel_r  = {layer_r, 2'b01};
+        w16_addr_r = {6'b000000, proj_addr};
       end
       default: begin
-        w8_sel_r  = 4'd0;
-        w8_addr_r = 16'd0;
+        w16_sel_r  = 4'd0;
+        w16_addr_r = 16'd0;
       end
     endcase
   end

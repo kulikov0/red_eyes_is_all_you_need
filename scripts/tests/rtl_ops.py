@@ -61,16 +61,16 @@ def load_hex(path):
     return vals
 
 
-# Read an 8-way packed weight hex and unpack it back into a flat byte array.
-# Byte L of each 64-bit word holds row[8g + L][c] at the same column
-def load_hex_w8(path, in_dim):
+# Read a 16-way packed weight hex and unpack it back into a flat byte array.
+# Byte L of each 128-bit word holds row[16g + L][c] at the same column
+def load_hex_w16(path, in_dim):
     vals = load_hex(path)
-    bytes_out = [0] * (len(vals) * 8)
+    bytes_out = [0] * (len(vals) * 16)
     for j, w in enumerate(vals):
         g = j // in_dim
         c = j % in_dim
-        for L in range(8):
-            bytes_out[(8 * g + L) * in_dim + c] = (w >> (L * 8)) & 0xFF
+        for L in range(16):
+            bytes_out[(16 * g + L) * in_dim + c] = (w >> (L * 8)) & 0xFF
     return bytes_out
 
 

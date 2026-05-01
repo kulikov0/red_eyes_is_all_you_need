@@ -22,7 +22,7 @@ DIM = 128
 
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "tests"))
-from rtl_ops import load_hex, load_hex_w8
+from rtl_ops import load_hex, load_hex_w16
 
 
 def parse_fp16_scale(path, name):
@@ -64,7 +64,7 @@ def synth_vec(floats):
 
 
 if __name__ == "__main__":
-    tok_mem = load_hex_w8(TOK_HEX, DIM)
+    tok_mem = load_hex_w16(TOK_HEX, DIM)
     pos_mem = load_hex(POS_HEX)
     tok_scale = parse_fp16_scale(SCALES_VH, "SCALE_TOK_EMB_WEIGHT")
     pos_scale = parse_fp16_scale(SCALES_VH, "SCALE_POS_EMB_WEIGHT")

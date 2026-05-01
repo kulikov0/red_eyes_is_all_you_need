@@ -1,8 +1,8 @@
-// Embedding lookup: tok_emb[token_id] * tok_scale + pos_emb[position] * pos_scale
+// Embedding lookup: tok_emb[token_id] * tok_scale + pos_emb[position] * pos_scale.
 //
-// tok_emb lives in weight_store_w8 packed; each 64-bit word holds rows
-// 8g..8g+7 at the same column, so embedding byte-extracts via token_id[2:0]
-// pos_emb lives in weight_store as bytes
+// tok_emb lives in weight_store_w16 packed. Each 128-bit word holds rows
+// 16g..16g+15 at the same column, so embedding byte-extracts via token_id[3:0].
+// pos_emb lives in weight_store as bytes.
 
 module embedding #(
   parameter DIM = 128
@@ -20,10 +20,10 @@ module embedding #(
   output reg  [15:0] w_addr_o,
   input  wire [7:0]  w_data_i,
 
-  // 64-bit packed tok_emb bus from weight_store_w8
-  output reg  [11:0] tok_addr_o,
-  input  wire [63:0] tok_data_i,
-  input  wire [15:0] tok_scale_i,
+  // 128-bit packed tok_emb bus from weight_store_w16
+  output reg  [10:0]  tok_addr_o,
+  input  wire [127:0] tok_data_i,
+  input  wire [15:0]  tok_scale_i,
 
   // Result write to shared RAM
   output reg                     res_we_o,
@@ -43,9 +43,9 @@ module embedding #(
   reg [7:0] idx;
 
   // pos_emb base address: position * 128. tok_emb packed addr stride is
-  // {token_id[7:3], dim[6:0]} since each 64-bit word covers 8 rows at one col
+  // {token_id[7:4], dim[6:0]} since each 128-bit word covers 16 rows at one col
   wire [14:0] pos_base = {position_i[7:0], 7'd0};
-  wire [11:0] tok_base = {token_id_i[7:3], 7'd0};
+  wire [10:0] tok_base = {token_id_i[7:4], 7'd0};
 
   // Buffer for tok_emb values read in first pass, used in second
   reg signed [7:0] tok_buf [0:DIM-1];
@@ -57,10 +57,10 @@ module embedding #(
   reg signed [7:0] w_data_r;
   always @(posedge clk_i) w_data_r <= w_data_i;
 
-  // Boundary register on tok_data_i, then byte-extract using token_id[2:0]
-  reg [63:0] tok_data_r;
+  // Boundary register on tok_data_i, byte-extract by token_id[3:0]
+  reg [127:0] tok_data_r;
   always @(posedge clk_i) tok_data_r <= tok_data_i;
-  wire signed [7:0] tok_byte = tok_data_r[token_id_i[2:0]*8 +: 8];
+  wire signed [7:0] tok_byte = tok_data_r[token_id_i[3:0]*8 +: 8];
 
   wire [7:0] prev3 = idx - 8'd3;
 
@@ -128,7 +128,7 @@ module embedding #(
       res_we_o    <= 1'b0;
       w_sel_o     <= 6'd0;
       w_addr_o    <= 16'd0;
-      tok_addr_o  <= 12'd0;
+      tok_addr_o  <= 11'd0;
       tok_scale_r <= 16'd0;
 
     end else begin
@@ -152,7 +152,7 @@ module embedding #(
           if (idx == 8'd2)
             tok_scale_r <= tok_scale_i;
           if (idx < DIM[7:0] - 8'd1) begin
-            tok_addr_o <= tok_base + {4'd0, idx} + 12'd1;
+            tok_addr_o <= tok_base + {3'd0, idx} + 11'd1;
           end
           if (idx > 2) begin
             tok_buf[prev3[6:0]] <= tok_byte;

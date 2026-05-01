@@ -15,7 +15,7 @@ import sys
 from rtl_ops import (
     DIM, MEM,
     to_signed8, fp16_to_float, fp16_from_int,
-    load_hex, load_hex_w8, load_lut16, parse_scale_bits,
+    load_hex, load_hex_w16, load_lut16, parse_scale_bits,
     rtl_attention_fp16,
 )
 from ideal_ops import ideal_attention_fp16
@@ -69,8 +69,8 @@ if __name__ == "__main__":
             print(f"Missing: {path}")
             sys.exit(1)
 
-    qkv_w = load_hex_w8(qkv_hex, DIM)
-    proj_w = load_hex_w8(proj_hex, DIM)
+    qkv_w = load_hex_w16(qkv_hex, DIM)
+    proj_w = load_hex_w16(proj_hex, DIM)
     lut0 = load_lut16(lut0_hex, signed=False)
     lut1 = load_lut16(lut1_hex, signed=True)
     qkv_scale = parse_scale_bits("SCALE_BLOCK0_ATTN_QKV_WEIGHT")

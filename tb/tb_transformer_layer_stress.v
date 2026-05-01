@@ -24,9 +24,9 @@ module tb_transformer_layer_stress;
   wire [5:0]  w_sel;
   wire [15:0] w_addr;
   wire [7:0]  w_data;
-  wire [3:0]  w8_sel;
-  wire [15:0] w8_addr;
-  wire [63:0] w8_data;
+  wire [3:0]   w16_sel;
+  wire [15:0]  w16_addr;
+  wire [127:0] w16_data;
   wire [1:0]  k_layer, v_layer;
   wire [2:0]  k_head,  v_head;
   wire [7:0]  k_pos,   v_pos;
@@ -41,7 +41,7 @@ module tb_transformer_layer_stress;
   wire done;
 
   wire [15:0] w_scale;
-  wire [15:0] w8_scale;
+  wire [15:0] w16_scale;
 
   // KV boundary register: mirrors transformer_top's reg between DUT and cache
   reg [1:0]  k_layer_r, v_layer_r;
@@ -75,13 +75,13 @@ module tb_transformer_layer_stress;
     .scale_o     (w_scale)
   );
 
-  weight_store_w8 u_ws_w8 (
+  weight_store_w16 u_ws_w16 (
     .clk_i          (clk),
-    .w8_sel_i       (w8_sel),
-    .w8_addr_i      (w8_addr),
-    .data_o         (w8_data),
-    .scale_o        (w8_scale),
-    .tok_emb_addr_i (12'd0),
+    .w16_sel_i      (w16_sel),
+    .w16_addr_i     (w16_addr),
+    .data_o         (w16_data),
+    .scale_o        (w16_scale),
+    .tok_emb_addr_i (11'd0),
     .tok_emb_data_o (),
     .tok_emb_scale_o()
   );
@@ -123,10 +123,10 @@ module tb_transformer_layer_stress;
     .w_addr_o   (w_addr),
     .w_data_i   (w_data),
     .w_scale_i  (w_scale),
-    .w8_sel_o   (w8_sel),
-    .w8_addr_o  (w8_addr),
-    .w8_data_i  (w8_data),
-    .w8_scale_i (w8_scale),
+    .w16_sel_o  (w16_sel),
+    .w16_addr_o (w16_addr),
+    .w16_data_i (w16_data),
+    .w16_scale_i(w16_scale),
     .k_we_o     (k_we),
     .k_wdata_o  (k_wdata),
     .k_layer_o  (k_layer),

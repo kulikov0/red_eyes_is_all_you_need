@@ -13,8 +13,8 @@ module tb_embedding;
   wire [5:0]  w_sel;
   wire [15:0] w_addr;
   wire [7:0]  w_data;
-  wire [11:0] tok_addr;
-  wire [63:0] tok_data;
+  wire [10:0]  tok_addr;
+  wire [127:0] tok_data;
   wire [15:0] tok_scale;
   wire done;
 
@@ -28,8 +28,8 @@ module tb_embedding;
       embed[emb_waddr] <= emb_wdata;
   end
 
-  reg [7:0]  pos_mem [0:32767];
-  reg [63:0] tok_mem [0:4095];
+  reg [7:0]   pos_mem [0:32767];
+  reg [127:0] tok_mem [0:2047];
   initial begin
     $readmemh("/home/user/red_eyes_is_all_you_need/mem/tok_emb_weight.hex", tok_mem);
     $readmemh("/home/user/red_eyes_is_all_you_need/mem/pos_emb_weight.hex", pos_mem);
@@ -59,9 +59,9 @@ module tb_embedding;
     endcase
   end
 
-  // Mirror weight_store_w8 tok_emb port: 1-cycle addr reg + 1-cycle BRAM
-  reg [11:0] tok_addr_r;
-  reg [63:0] tok_data_r;
+  // Mirror weight_store_w16 tok_emb port: 1-cycle addr reg + 1-cycle BRAM
+  reg [10:0]  tok_addr_r;
+  reg [127:0] tok_data_r;
   reg [15:0] tok_scale_r;
   always @(posedge clk) begin
     tok_addr_r  <= tok_addr;

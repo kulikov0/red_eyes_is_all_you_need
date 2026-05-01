@@ -198,17 +198,17 @@ module tb_fp16;
     $readmemh("/home/user/red_eyes_is_all_you_need/mem/matvec_fp16_8x4_expected.hex", mv2_exp);
   end
 
-  // matvec_fp16_w8 test 3: 32x4 packed
-  localparam T3_IN = 4, T3_OUT = 32;
-  localparam T3_WORDS = (T3_OUT / 8) * T3_IN;
+  // matvec_fp16_w16 test 3: 64x4 packed
+  localparam T3_IN = 4, T3_OUT = 64;
+  localparam T3_WORDS = (T3_OUT / 16) * T3_IN;
   reg                            mv3_start;
   reg  [15:0]                    mv3_scale;
   wire [$clog2(T3_WORDS)-1:0]    mv3_waddr;
   wire                           mv3_done;
-  reg  [63:0] mv3_wmem [0:T3_WORDS-1];
-  reg  [63:0] mv3_wdata;
+  reg  [127:0] mv3_wmem [0:T3_WORDS-1];
+  reg  [127:0] mv3_wdata;
   initial begin
-    $readmemh("/home/user/red_eyes_is_all_you_need/mem/matvec_fp16_w8_32x4_weights.hex",
+    $readmemh("/home/user/red_eyes_is_all_you_need/mem/matvec_fp16_w16_64x4_weights.hex",
               mv3_wmem);
   end
   reg [$clog2(T3_WORDS)-1:0] mv3_waddr_r;
@@ -224,7 +224,7 @@ module tb_fp16;
   wire [$clog2(T3_OUT)-1:0] mv3_rwaddr;
   wire [15:0]               mv3_rwdata;
 
-  matvec_fp16_w8 #(.IN_DIM(T3_IN), .OUT_DIM(T3_OUT)) u_mv3 (
+  matvec_fp16_w16 #(.IN_DIM(T3_IN), .OUT_DIM(T3_OUT)) u_mv3 (
     .clk_i(clk), .rst_i(rst), .start_i(mv3_start),
     .scale_i(mv3_scale),
     .weight_addr_o(mv3_waddr), .weight_data_i(mv3_wdata),
@@ -237,8 +237,8 @@ module tb_fp16;
   reg [15:0] mv3_iv [0:T3_IN-1];
   reg [15:0] mv3_exp [0:T3_OUT-1];
   initial begin
-    $readmemh("/home/user/red_eyes_is_all_you_need/mem/matvec_fp16_w8_32x4_input.hex", mv3_iv);
-    $readmemh("/home/user/red_eyes_is_all_you_need/mem/matvec_fp16_w8_32x4_expected.hex", mv3_exp);
+    $readmemh("/home/user/red_eyes_is_all_you_need/mem/matvec_fp16_w16_64x4_input.hex", mv3_iv);
+    $readmemh("/home/user/red_eyes_is_all_you_need/mem/matvec_fp16_w16_64x4_expected.hex", mv3_exp);
   end
 
   initial begin
@@ -499,10 +499,10 @@ module tb_fp16;
       end
     end
 
-    // matvec_fp16_w8 test 3: 32x4 packed
+    // matvec_fp16_w16 test 3: 64x4 packed
     #20;
-    $display("=== matvec_fp16_w8 32x4 ===");
-    $fwrite(fd, "=== matvec_fp16_w8 32x4 ===\n");
+    $display("=== matvec_fp16_w16 64x4 ===");
+    $fwrite(fd, "=== matvec_fp16_w16 64x4 ===\n");
     for (ri = 0; ri < T3_IN; ri = ri + 1)
       mv3_act[ri] = mv3_iv[ri];
     @(posedge clk);
