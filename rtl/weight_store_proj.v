@@ -12,8 +12,8 @@ module weight_store_proj (
   `include "weight_scales.vh"
 
   reg [9:0]  addr_r;
-  reg [1:0]  layer_r1;
-  reg [1:0]  layer_r;
+  (* DONT_TOUCH = "true" *) reg [1:0]  layer_r1;
+  (* DONT_TOUCH = "true" *) reg [1:0]  layer_r;
   always @(posedge clk_i) begin
     addr_r   <= addr_i;
     layer_r1 <= layer_i;

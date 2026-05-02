@@ -205,6 +205,8 @@ module attention (
 
   // KV store counter (0..255: first 128 = K, next 128 = V)
   reg [8:0] kv_cnt;
+  // 3-cycle write FSM lets the long route to KV BRAMs use multicycle-2 in xdc
+  reg [1:0] kv_phase;
 
   // Score computation pipeline
   reg [4:0]  sc_cnt;
@@ -621,8 +623,9 @@ module attention (
 
         S_QKV: begin
           if (qkv_done) begin
-            state  <= S_KV_STORE;
-            kv_cnt <= 9'd0;
+            state    <= S_KV_STORE;
+            kv_cnt   <= 9'd0;
+            kv_phase <= 2'd0;
           end
         end
 
@@ -639,14 +642,21 @@ module attention (
           v_dim_o   <= kv_idx[3:0];
 
           if (kv_cnt < 9'd128) begin
-            k_we_o    <= 1'b1;
             k_wdata_o <= kv_fp16_k;
           end else begin
-            v_we_o    <= 1'b1;
             v_wdata_o <= kv_fp16_v;
           end
 
-          if (kv_cnt == 9'd255) begin
+          if (kv_phase == 2'd2) begin
+            if (kv_cnt < 9'd128) k_we_o <= 1'b1;
+            else                 v_we_o <= 1'b1;
+            kv_cnt   <= kv_cnt + 9'd1;
+            kv_phase <= 2'd0;
+          end else begin
+            kv_phase <= kv_phase + 2'd1;
+          end
+
+          if (kv_cnt == 9'd255 && kv_phase == 2'd2) begin
             state          <= S_HEADS;
             score_head_idx <= 3'd0;
             av_head_idx    <= 3'd0;
@@ -675,7 +685,6 @@ module attention (
             sc_red_d_lo_pend <= 1'b0;
             sc_red_d_hi_pend <= 1'b0;
           end
-          kv_cnt <= kv_cnt + 9'd1;
         end
 
         S_HEADS: begin

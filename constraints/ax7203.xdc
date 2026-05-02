@@ -65,3 +65,9 @@ add_cells_to_pblock pb_softmax [get_cells u_tf/u_tl/u_attn/u_sm]
 resize_pblock pb_softmax -add {SLICE_X100Y170:SLICE_X145Y210 \
                                RAMB36_X6Y36:RAMB36_X7Y43 \
                                RAMB18_X6Y75:RAMB18_X7Y89}
+# 3-cycle KV write FSM in attention.v holds wdata stable for 2 cycles before
+# WE pulses, so the long route to scattered KV BRAMs has 2 clock periods
+set_multicycle_path 2 -setup -from [get_cells -hier -filter {NAME =~ *u_tf/k_wdata_o_reg* || NAME =~ *u_tf/v_wdata_o_reg* || NAME =~ *u_tf/k_pos_o_reg* || NAME =~ *u_tf/v_pos_o_reg*}] \
+                              -to   [get_pins -hier -filter {NAME =~ *u_*cache/banks*u_ram/mem_reg*/DIADI* || NAME =~ *u_*cache/banks*u_ram/mem_reg*/DIBDI* || NAME =~ *u_*cache/banks*u_ram/mem_reg*/WEA* || NAME =~ *u_*cache/banks*u_ram/mem_reg*/WEBWE*}]
+set_multicycle_path 1 -hold  -from [get_cells -hier -filter {NAME =~ *u_tf/k_wdata_o_reg* || NAME =~ *u_tf/v_wdata_o_reg* || NAME =~ *u_tf/k_pos_o_reg* || NAME =~ *u_tf/v_pos_o_reg*}] \
+                              -to   [get_pins -hier -filter {NAME =~ *u_*cache/banks*u_ram/mem_reg*/DIADI* || NAME =~ *u_*cache/banks*u_ram/mem_reg*/DIBDI* || NAME =~ *u_*cache/banks*u_ram/mem_reg*/WEA* || NAME =~ *u_*cache/banks*u_ram/mem_reg*/WEBWE*}]
