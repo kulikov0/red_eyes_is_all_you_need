@@ -171,25 +171,48 @@ module attention (
     res_wdata_o = proj_res_wdata;
   end
 
-  // Softmax (Q16.7 input, Q1.15 output)
+  // Two softmax instances allow head N+1 to start scoring while head N is still
+  // running softmax. Even heads route to sm_a, odd heads to sm_b
   reg         sm_start;
   reg         sm_in_valid;
   reg  [23:0] sm_in_data;
-  wire        sm_out_valid;
-  wire [15:0] sm_out_data;
-  wire        sm_done;
 
-  softmax #(.N(256), .IN_W(24)) u_sm (
+  wire sm_a_active = !score_head_idx[0];
+  wire sm_b_active =  score_head_idx[0];
+
+  wire        sm_a_out_valid, sm_b_out_valid;
+  wire [15:0] sm_a_out_data,  sm_b_out_data;
+  wire        sm_a_done,      sm_b_done;
+
+  softmax #(.N(256), .IN_W(24)) u_sm_a (
     .clk_i      (clk_i),
     .rst_i      (rst_i),
-    .start_i    (sm_start),
-    .in_valid_i (sm_in_valid),
+    .start_i    (sm_start && sm_a_active),
+    .in_valid_i (sm_in_valid && sm_a_active),
     .in_data_i  (sm_in_data),
     .in_ready_o (),
-    .out_valid_o(sm_out_valid),
-    .out_data_o (sm_out_data),
-    .done_o     (sm_done)
+    .out_valid_o(sm_a_out_valid),
+    .out_data_o (sm_a_out_data),
+    .done_o     (sm_a_done)
   );
+
+  softmax #(.N(256), .IN_W(24)) u_sm_b (
+    .clk_i      (clk_i),
+    .rst_i      (rst_i),
+    .start_i    (sm_start && sm_b_active),
+    .in_valid_i (sm_in_valid && sm_b_active),
+    .in_data_i  (sm_in_data),
+    .in_ready_o (),
+    .out_valid_o(sm_b_out_valid),
+    .out_data_o (sm_b_out_data),
+    .done_o     (sm_b_done)
+  );
+
+  // Per-instance busy flags + capture counters. Capture runs as a free pair
+  // of always-block writers so head N+1 can score into sm_b while sm_a is
+  // still streaming head N's outputs to attn_buf_a
+  reg sm_a_busy, sm_b_busy;
+  reg [7:0] sm_a_out_cnt, sm_b_out_cnt;
 
   // QKV act_raddr passthrough to shared RAM
   assign act_raddr_o = qkv_act_raddr;
@@ -222,8 +245,6 @@ module attention (
   reg [3:0]  av_dim_pipe [0:12];
   reg        av_issue_done;
 
-  // Softmax output capture counter
-  reg [8:0] sm_out_cnt;
   reg [8:0] pad_cnt;
 
 
@@ -532,6 +553,10 @@ module attention (
       sc_red_d_lo_pend <= 1'b0;
       sc_red_d_hi_pend <= 1'b0;
       sc_partial_pipe  <= 4'b0000;
+      sm_a_busy      <= 1'b0;
+      sm_b_busy      <= 1'b0;
+      sm_a_out_cnt   <= 8'd0;
+      sm_b_out_cnt   <= 8'd0;
     end else begin
       done_o      <= 1'b0;
       qkv_start   <= 1'b0;
@@ -540,6 +565,23 @@ module attention (
       sm_in_valid <= 1'b0;
       k_we_o      <= 1'b0;
       v_we_o      <= 1'b0;
+
+      // Per-instance busy track + output capture, runs concurrently with score
+      if (sm_start && sm_a_active) begin sm_a_busy <= 1'b1; sm_a_out_cnt <= 8'd0; end
+      if (sm_start && sm_b_active) begin sm_b_busy <= 1'b1; sm_b_out_cnt <= 8'd0; end
+      if (sm_a_done) sm_a_busy <= 1'b0;
+      if (sm_b_done) sm_b_busy <= 1'b0;
+      if (sm_a_out_valid) begin
+        attn_buf_a[sm_a_out_cnt] <= sm_a_out_data;
+        sm_a_out_cnt <= sm_a_out_cnt + 8'd1;
+      end
+      if (sm_b_out_valid) begin
+        attn_buf_b[sm_b_out_cnt] <= sm_b_out_data;
+        sm_b_out_cnt <= sm_b_out_cnt + 8'd1;
+      end
+      scored_count <= scored_count
+                    + {3'd0, sm_a_done}
+                    + {3'd0, sm_b_done};
 
       av_bram_v <= {av_bram_v[1:0], av_issue};
       av_dim_pipe[0] <= av_cnt[3:0];
@@ -713,8 +755,9 @@ module attention (
 
               if (issue_done && cap_done) begin
                 if (pos_r == 8'd255) begin
-                  score_state <= SC_SM_WAIT;
-                  sm_out_cnt  <= 9'd0;
+                  // All scores fed; either advance to next head or finalize
+                  if (score_head_idx == 3'd7) score_state <= SC_SM_WAIT;
+                  else                        score_state <= SC_WAIT;
                 end else begin
                   score_state <= SC_PAD;
                   pad_cnt     <= {1'b0, pos_r} + 9'd1;
@@ -727,29 +770,22 @@ module attention (
               sm_in_data  <= 24'sh800000;
               pad_cnt     <= pad_cnt + 9'd1;
               if (pad_cnt == 9'd255) begin
-                score_state <= SC_SM_WAIT;
-                sm_out_cnt  <= 9'd0;
-              end
-            end
-
-            SC_SM_WAIT: begin
-              if (sm_out_valid) begin
-                if (score_head_idx[0]) attn_buf_b[sm_out_cnt[7:0]] <= sm_out_data;
-                else                   attn_buf_a[sm_out_cnt[7:0]] <= sm_out_data;
-                sm_out_cnt <= sm_out_cnt + 9'd1;
-              end
-              if (sm_done) begin
-                scored_count <= scored_count + 4'd1;
-                if (score_head_idx == 3'd7) score_state <= SC_DONE;
+                if (score_head_idx == 3'd7) score_state <= SC_SM_WAIT;
                 else                        score_state <= SC_WAIT;
               end
             end
 
-            // Wait until the buf the next head needs to write is no longer
-            // being read by AV. Next writer is head score_head_idx+1; previous
-            // writer of the same buf was head score_head_idx-1
+            // Last head only: wait for both softmax instances to finish before
+            // signalling SC_DONE. Capture is handled in the always block above
+            SC_SM_WAIT: begin
+              if (!sm_a_busy && !sm_b_busy) score_state <= SC_DONE;
+            end
+
+            // Hold off until AV has freed the attn_buf and the target softmax
+            // instance is idle
             SC_WAIT: begin
-              if ({1'b0, score_head_idx} <= av_done_count) begin
+              if ({1'b0, score_head_idx} <= av_done_count
+                  && (score_head_idx[0] ? !sm_a_busy : !sm_b_busy)) begin
                 score_head_idx <= score_head_idx + 3'd1;
                 score_state    <= SC_SCORE;
                 sm_start       <= 1'b1;
