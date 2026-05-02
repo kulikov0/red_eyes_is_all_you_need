@@ -1,6 +1,6 @@
 `timescale 1ns / 1ps
 
-// Unified FP16 testbench: add, mul, reduce_k4, from_int8, to_int8, to_q167, q115_to_fp16, rsqrt, matvec
+// Unified FP16 testbench: add, mul, reduce_k8, from_int8, to_int8, to_q167, q115_to_fp16, rsqrt, matvec_w16
 module tb_fp16;
 
   reg clk;
@@ -11,7 +11,7 @@ module tb_fp16;
   reg rst;
   integer ti, ri;
 
-  // fp16_add: 3-cycle pipelined
+  // fp16_add: 4-cycle pipelined
   reg         add_valid_in;
   reg  [15:0] add_a, add_b;
   wire        add_valid_out;
@@ -90,14 +90,14 @@ module tb_fp16;
   reg [31:0] tv_rsqrt [0:N_RSQRT-1];
   initial $readmemh("/home/user/red_eyes_is_all_you_need/mem/fp16_rsqrt_vectors.hex", tv_rsqrt);
 
-  // fp16_reduce_k4: streams 16 fp16 values per test, computes K=4 tree reduce
+  // fp16_reduce_k8: streams 16 fp16 values per test, computes K=8 tree reduce
   reg         red_clear;
   reg         red_valid;
   reg         red_flush;
   reg  [15:0] red_data;
   wire        red_done;
   wire [15:0] red_sum;
-  fp16_reduce_k4 u_reduce (
+  fp16_reduce_k8 u_reduce (
     .clk_i  (clk), .rst_i(rst),
     .clear_i(red_clear), .valid_i(red_valid), .data_i(red_data),
     .flush_i(red_flush),
@@ -109,97 +109,12 @@ module tb_fp16;
   reg [15:0] tv_reduce_in  [0:N_REDUCE_TESTS*N_REDUCE_VALS-1];
   reg [15:0] tv_reduce_exp [0:N_REDUCE_TESTS-1];
   initial begin
-    $readmemh("/home/user/red_eyes_is_all_you_need/mem/fp16_reduce_k4_inputs.hex", tv_reduce_in);
-    $readmemh("/home/user/red_eyes_is_all_you_need/mem/fp16_reduce_k4_expected.hex", tv_reduce_exp);
+    $readmemh("/home/user/red_eyes_is_all_you_need/mem/fp16_reduce_k8_inputs.hex", tv_reduce_in);
+    $readmemh("/home/user/red_eyes_is_all_you_need/mem/fp16_reduce_k8_expected.hex", tv_reduce_exp);
   end
 
-  // matvec_fp16 test 1: 4x4
-  localparam T1_IN = 4, T1_OUT = 4;
-  reg                              mv1_start;
-  reg  [15:0]                     mv1_scale;
-  wire [$clog2(T1_OUT*T1_IN)-1:0] mv1_waddr;
-  wire                            mv1_done;
-  reg signed [7:0] mv1_wmem [0:T1_OUT*T1_IN-1];
-  reg signed [7:0] mv1_wdata;
-  initial begin
-    $readmemh("/home/user/red_eyes_is_all_you_need/mem/matvec_fp16_4x4_weights.hex",
-              mv1_wmem);
-  end
-  // Mimic weight_store: addr boundary reg followed by sync BRAM read
-  reg [$clog2(T1_OUT*T1_IN)-1:0] mv1_waddr_r;
-  always @(posedge clk) begin
-    mv1_waddr_r <= mv1_waddr;
-    mv1_wdata   <= mv1_wmem[mv1_waddr_r];
-  end
-
-  reg  [15:0] mv1_act [0:T1_IN-1];
-  reg  [15:0] mv1_res [0:T1_OUT-1];
-  wire [$clog2(T1_IN)-1:0]  mv1_raddr;
-  wire                      mv1_rwe;
-  wire [$clog2(T1_OUT)-1:0] mv1_rwaddr;
-  wire [15:0]               mv1_rwdata;
-
-  matvec_fp16 #(.IN_DIM(T1_IN), .OUT_DIM(T1_OUT)) u_mv1 (
-    .clk_i(clk), .rst_i(rst), .start_i(mv1_start),
-    .scale_i(mv1_scale),
-    .weight_addr_o(mv1_waddr), .weight_data_i(mv1_wdata),
-    .act_raddr_o(mv1_raddr), .act_rdata_i(mv1_act[mv1_raddr]),
-    .res_we_o(mv1_rwe), .res_waddr_o(mv1_rwaddr), .res_wdata_o(mv1_rwdata),
-    .done_o(mv1_done)
-  );
-  always @(posedge clk) if (mv1_rwe) mv1_res[mv1_rwaddr] <= mv1_rwdata;
-
-  reg [15:0] mv1_iv [0:T1_IN-1];
-  reg [15:0] mv1_exp [0:T1_OUT-1];
-  initial begin
-    $readmemh("/home/user/red_eyes_is_all_you_need/mem/matvec_fp16_4x4_input.hex", mv1_iv);
-    $readmemh("/home/user/red_eyes_is_all_you_need/mem/matvec_fp16_4x4_expected.hex", mv1_exp);
-  end
-
-  // matvec_fp16 test 2: 8x4
-  localparam T2_IN = 4, T2_OUT = 8;
-  reg                              mv2_start;
-  reg  [15:0]                     mv2_scale;
-  wire [$clog2(T2_OUT*T2_IN)-1:0] mv2_waddr;
-  wire                            mv2_done;
-  reg signed [7:0] mv2_wmem [0:T2_OUT*T2_IN-1];
-  reg signed [7:0] mv2_wdata;
-  initial begin
-    $readmemh("/home/user/red_eyes_is_all_you_need/mem/matvec_fp16_8x4_weights.hex",
-              mv2_wmem);
-  end
-  reg [$clog2(T2_OUT*T2_IN)-1:0] mv2_waddr_r;
-  always @(posedge clk) begin
-    mv2_waddr_r <= mv2_waddr;
-    mv2_wdata   <= mv2_wmem[mv2_waddr_r];
-  end
-
-  reg  [15:0] mv2_act [0:T2_IN-1];
-  reg  [15:0] mv2_res [0:T2_OUT-1];
-  wire [$clog2(T2_IN)-1:0]  mv2_raddr;
-  wire                      mv2_rwe;
-  wire [$clog2(T2_OUT)-1:0] mv2_rwaddr;
-  wire [15:0]               mv2_rwdata;
-
-  matvec_fp16 #(.IN_DIM(T2_IN), .OUT_DIM(T2_OUT)) u_mv2 (
-    .clk_i(clk), .rst_i(rst), .start_i(mv2_start),
-    .scale_i(mv2_scale),
-    .weight_addr_o(mv2_waddr), .weight_data_i(mv2_wdata),
-    .act_raddr_o(mv2_raddr), .act_rdata_i(mv2_act[mv2_raddr]),
-    .res_we_o(mv2_rwe), .res_waddr_o(mv2_rwaddr), .res_wdata_o(mv2_rwdata),
-    .done_o(mv2_done)
-  );
-  always @(posedge clk) if (mv2_rwe) mv2_res[mv2_rwaddr] <= mv2_rwdata;
-
-  reg [15:0] mv2_iv [0:T2_IN-1];
-  reg [15:0] mv2_exp [0:T2_OUT-1];
-  initial begin
-    $readmemh("/home/user/red_eyes_is_all_you_need/mem/matvec_fp16_8x4_input.hex", mv2_iv);
-    $readmemh("/home/user/red_eyes_is_all_you_need/mem/matvec_fp16_8x4_expected.hex", mv2_exp);
-  end
-
-  // matvec_fp16_w16 test 3: 64x4 packed
-  localparam T3_IN = 4, T3_OUT = 64;
+  // matvec_fp16_w16 test 3: 128x4 packed
+  localparam T3_IN = 4, T3_OUT = 128;
   localparam T3_WORDS = (T3_OUT / 16) * T3_IN;
   reg                            mv3_start;
   reg  [15:0]                    mv3_scale;
@@ -208,7 +123,7 @@ module tb_fp16;
   reg  [127:0] mv3_wmem [0:T3_WORDS-1];
   reg  [127:0] mv3_wdata;
   initial begin
-    $readmemh("/home/user/red_eyes_is_all_you_need/mem/matvec_fp16_w16_64x4_weights.hex",
+    $readmemh("/home/user/red_eyes_is_all_you_need/mem/matvec_fp16_w16_128x4_weights.hex",
               mv3_wmem);
   end
   reg [$clog2(T3_WORDS)-1:0] mv3_waddr_r;
@@ -237,8 +152,8 @@ module tb_fp16;
   reg [15:0] mv3_iv [0:T3_IN-1];
   reg [15:0] mv3_exp [0:T3_OUT-1];
   initial begin
-    $readmemh("/home/user/red_eyes_is_all_you_need/mem/matvec_fp16_w16_64x4_input.hex", mv3_iv);
-    $readmemh("/home/user/red_eyes_is_all_you_need/mem/matvec_fp16_w16_64x4_expected.hex", mv3_exp);
+    $readmemh("/home/user/red_eyes_is_all_you_need/mem/matvec_fp16_w16_128x4_input.hex", mv3_iv);
+    $readmemh("/home/user/red_eyes_is_all_you_need/mem/matvec_fp16_w16_128x4_expected.hex", mv3_exp);
   end
 
   initial begin
@@ -248,8 +163,8 @@ module tb_fp16;
     cvt_in = 8'd0; to_in = 16'd0; q167_in = 16'd0; q115_in = 16'd0;
     rsqrt_valid_in = 1'b0; rsqrt_in = 16'd0;
     red_clear = 1'b0; red_valid = 1'b0; red_flush = 1'b0; red_data = 16'd0;
-    mv1_start = 1'b0; mv2_start = 1'b0; mv3_start = 1'b0;
-    mv1_scale = 16'h2c00; mv2_scale = 16'h2c00; mv3_scale = 16'h2c00;
+    mv3_start = 1'b0;
+    mv3_scale = 16'h2c00;
     errors = 0;
 
     fd = $fopen("/home/user/red_eyes_is_all_you_need/logs/tb_fp16.log", "w");
@@ -259,7 +174,7 @@ module tb_fp16;
     rst = 1'b0;
     #10;
 
-    // fp16_add: 3-cycle pipelined, drive valid high, wait 3 clocks for output
+    // fp16_add: 4-cycle pipelined, drive valid high, wait 4 clocks for output
     $display("=== fp16_add (%0d tests) ===", N_ADD);
     $fwrite(fd, "=== fp16_add (%0d tests) ===\n", N_ADD);
     add_valid_in = 1'b1;
@@ -267,6 +182,7 @@ module tb_fp16;
       @(posedge clk);
       add_a = tv_add[ti][47:32];
       add_b = tv_add[ti][31:16];
+      @(posedge clk);
       @(posedge clk);
       @(posedge clk);
       @(posedge clk); #1;
@@ -422,9 +338,9 @@ module tb_fp16;
       end
     end
 
-    // fp16_reduce_k4: stream 16 inputs per test, check final sum
-    $display("=== fp16_reduce_k4 (%0d tests) ===", N_REDUCE_TESTS);
-    $fwrite(fd, "=== fp16_reduce_k4 (%0d tests) ===\n", N_REDUCE_TESTS);
+    // fp16_reduce_k8: stream 16 inputs per test, check final sum
+    $display("=== fp16_reduce_k8 (%0d tests) ===", N_REDUCE_TESTS);
+    $fwrite(fd, "=== fp16_reduce_k8 (%0d tests) ===\n", N_REDUCE_TESTS);
     for (ti = 0; ti < N_REDUCE_TESTS; ti = ti + 1) begin : red_loop
       reg [15:0] expected;
       integer k;
@@ -452,57 +368,10 @@ module tb_fp16;
       end
     end
 
-    // matvec_fp16 test 1: 4x4
-    $display("=== matvec_fp16 4x4 ===");
-    $fwrite(fd, "=== matvec_fp16 4x4 ===\n");
-    for (ri = 0; ri < T1_IN; ri = ri + 1)
-      mv1_act[ri] = mv1_iv[ri];
-    @(posedge clk);
-    mv1_start = 1'b1;
-    @(posedge clk);
-    mv1_start = 1'b0;
-    wait(mv1_done);
-    @(posedge clk); #1;
-    for (ri = 0; ri < T1_OUT; ri = ri + 1) begin : mv1_chk
-      reg [15:0] got, expected;
-      got = mv1_res[ri];
-      expected = mv1_exp[ri];
-      if (got !== expected) begin
-        $fwrite(fd, "MV1 [%0d] got=%04x exp=%04x FAIL\n", ri, got, expected);
-        errors = errors + 1;
-      end else begin
-        $fwrite(fd, "MV1 [%0d] got=%04x exp=%04x OK\n", ri, got, expected);
-      end
-    end
-
-    // matvec_fp16 test 2: 8x4
+    // matvec_fp16_w16 test 3: 128x4 packed
     #20;
-    $display("=== matvec_fp16 8x4 ===");
-    $fwrite(fd, "=== matvec_fp16 8x4 ===\n");
-    for (ri = 0; ri < T2_IN; ri = ri + 1)
-      mv2_act[ri] = mv2_iv[ri];
-    @(posedge clk);
-    mv2_start = 1'b1;
-    @(posedge clk);
-    mv2_start = 1'b0;
-    wait(mv2_done);
-    @(posedge clk); #1;
-    for (ri = 0; ri < T2_OUT; ri = ri + 1) begin : mv2_chk
-      reg [15:0] got, expected;
-      got = mv2_res[ri];
-      expected = mv2_exp[ri];
-      if (got !== expected) begin
-        $fwrite(fd, "MV2 [%0d] got=%04x exp=%04x FAIL\n", ri, got, expected);
-        errors = errors + 1;
-      end else begin
-        $fwrite(fd, "MV2 [%0d] got=%04x exp=%04x OK\n", ri, got, expected);
-      end
-    end
-
-    // matvec_fp16_w16 test 3: 64x4 packed
-    #20;
-    $display("=== matvec_fp16_w16 64x4 ===");
-    $fwrite(fd, "=== matvec_fp16_w16 64x4 ===\n");
+    $display("=== matvec_fp16_w16 128x4 ===");
+    $fwrite(fd, "=== matvec_fp16_w16 128x4 ===\n");
     for (ri = 0; ri < T3_IN; ri = ri + 1)
       mv3_act[ri] = mv3_iv[ri];
     @(posedge clk);

@@ -21,9 +21,12 @@ module tb_attention_stress;
       res_reg[res_waddr] <= res_wdata;
   end
 
-  wire [3:0]   w16_sel;
-  wire [15:0]  w16_addr;
-  wire [127:0] w16_data;
+  wire [11:0]  qkv_addr;
+  wire [127:0] qkv_data;
+  wire [15:0]  qkv_scale;
+  wire [9:0]   proj_addr;
+  wire [127:0] proj_data;
+  wire [15:0]  proj_scale;
 
   wire [1:0]  k_layer, v_layer;
   wire [2:0]  k_head,  v_head;
@@ -37,8 +40,6 @@ module tb_attention_stress;
   wire [31:0] v_rdata;
 
   wire done;
-
-  wire [15:0] w16_scale;
 
   // KV boundary register: mirrors transformer_top's reg between DUT and cache
   reg [1:0]  k_layer_r, v_layer_r;
@@ -64,15 +65,14 @@ module tb_attention_stress;
     v_wdata_r <= v_wdata;
   end
 
-  weight_store_w16 u_ws_w16 (
-    .clk_i          (clk),
-    .w16_sel_i      (w16_sel),
-    .w16_addr_i     (w16_addr),
-    .data_o         (w16_data),
-    .scale_o        (w16_scale),
-    .tok_emb_addr_i (11'd0),
-    .tok_emb_data_o (),
-    .tok_emb_scale_o()
+  weight_store_qkv u_ws_qkv (
+    .clk_i  (clk), .layer_i(layer),
+    .addr_i (qkv_addr), .data_o(qkv_data), .scale_o(qkv_scale)
+  );
+
+  weight_store_proj u_ws_proj (
+    .clk_i  (clk), .layer_i(layer),
+    .addr_i (proj_addr), .data_o(proj_data), .scale_o(proj_scale)
   );
 
   kv_cache u_k_cache (
@@ -108,10 +108,12 @@ module tb_attention_stress;
     .res_we_o   (res_we),
     .res_waddr_o(res_waddr),
     .res_wdata_o(res_wdata),
-    .w16_sel_o  (w16_sel),
-    .w16_addr_o (w16_addr),
-    .w16_data_i (w16_data),
-    .w16_scale_i(w16_scale),
+    .qkv_addr_o (qkv_addr),
+    .qkv_data_i (qkv_data),
+    .qkv_scale_i(qkv_scale),
+    .proj_addr_o(proj_addr),
+    .proj_data_i(proj_data),
+    .proj_scale_i(proj_scale),
     .k_we_o     (k_we),
     .k_wdata_o  (k_wdata),
     .k_layer_o  (k_layer),

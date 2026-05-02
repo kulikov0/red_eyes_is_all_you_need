@@ -59,7 +59,7 @@ module tb_embedding;
     endcase
   end
 
-  // Mirror weight_store_w16 tok_emb port: 1-cycle addr reg + 1-cycle BRAM
+  // Mirror weight_store_tok_emb: 1-cycle addr reg + 1-cycle BRAM
   reg [10:0]  tok_addr_r;
   reg [127:0] tok_data_r;
   reg [15:0] tok_scale_r;

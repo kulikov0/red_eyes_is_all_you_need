@@ -1,11 +1,11 @@
 // 16-way SIMD matrix-vector multiply: int8 weights packed 16/word x fp16 input.
 //
 // weight_data_i is a 128-bit BRAM word holding 16 adjacent rows of the matrix
-// at the same column. K=4 round-robin partials per lane cover the 3-cycle
+// at the same column. K=8 round-robin partials per lane cover the 4-cycle
 // fp16_add feedback latency. Throughput is 16 weights per BRAM read.
-// Writeback emits 64 results per group of 64 rows.
+// Writeback emits 128 results per group of 128 rows.
 //
-// Assumes OUT_DIM % 64 == 0 and IN_DIM is a power of 2.
+// Assumes OUT_DIM % 128 == 0 and IN_DIM is a power of 2.
 
 module matvec_fp16_w16 #(
   parameter IN_DIM  = 128,
@@ -29,14 +29,16 @@ module matvec_fp16_w16 #(
   output reg  done_o
 );
 
-  localparam K       = 4;
-  localparam K_LOG   = 2;
+  localparam K       = 8;
+  localparam K_LOG   = 3;
   localparam COL_W   = $clog2(IN_DIM);
   localparam GRP_N   = OUT_DIM / (16 * K);
   localparam GRP_W   = (GRP_N <= 1) ? 1 : $clog2(GRP_N);
-  localparam WRITE_W = 6;
+  localparam WRITE_W = 7;
 
-  reg [15:0] in_snap [0:IN_DIM-1];
+  // Distributed RAM forces SLICEM LUTRAM placement near the lane multipliers
+  // and avoids the long route from a centralized BRAM into the 16 DSP B-pins
+  (* ram_style = "distributed" *) reg [15:0] in_snap [0:IN_DIM-1];
   reg [15:0] acc [0:15][0:K-1];
 
   localparam S_IDLE    = 3'd0;
@@ -57,7 +59,7 @@ module matvec_fp16_w16 #(
 
   assign weight_addr_o = group * (K * IN_DIM) + k * IN_DIM + col;
 
-  // Boundary register breaks the long route from weight_store_w16
+  // Boundary register breaks the long route from the dedicated weight bank
   reg [127:0] weight_data_r;
   always @(posedge clk_i) weight_data_r <= weight_data_i;
 
@@ -92,14 +94,14 @@ module matvec_fp16_w16 #(
   endgenerate
 
   reg [COL_W-1:0] col_pipe [0:4];
-  reg [K_LOG-1:0] k_pipe   [0:9];
+  reg [K_LOG-1:0] k_pipe   [0:10];
   integer i;
   always @(posedge clk_i) begin
     col_pipe[0] <= col;
     for (i = 1; i < 5; i = i + 1) col_pipe[i] <= col_pipe[i-1];
 
     k_pipe[0] <= k;
-    for (i = 1; i < 10; i = i + 1) k_pipe[i] <= k_pipe[i-1];
+    for (i = 1; i < 11; i = i + 1) k_pipe[i] <= k_pipe[i-1];
   end
 
   wire        mac_valid [0:15];
@@ -150,7 +152,7 @@ module matvec_fp16_w16 #(
       res_we_o <= 1'b0;
 
       for (j = 0; j < 16; j = j + 1) begin
-        if (add_valid[j]) acc[j][k_pipe[9]] <= add_sum[j];
+        if (add_valid[j]) acc[j][k_pipe[10]] <= add_sum[j];
       end
 
       case (state)
@@ -197,7 +199,7 @@ module matvec_fp16_w16 #(
         end
 
         S_DRAIN: begin
-          if (drain_cnt == 4'd9) begin
+          if (drain_cnt == 4'd10) begin
             state     <= S_WRITE;
             write_idx <= 0;
           end else begin
@@ -205,12 +207,12 @@ module matvec_fp16_w16 #(
           end
         end
 
-        // write_idx[3:0]=lane, write_idx[5:4]=k slot.
-        // Row index = group*64 + write_idx
+        // write_idx[3:0]=lane, write_idx[6:4]=k slot.
+        // Row index = group*128 + write_idx
         S_WRITE: begin
           res_we_o    <= 1'b1;
           res_waddr_o <= group * (16 * K) + write_idx;
-          res_wdata_o <= acc[write_idx[3:0]][write_idx[5:4]];
+          res_wdata_o <= acc[write_idx[3:0]][write_idx[6:4]];
           if (write_idx == (16 * K - 1)) begin
             if (group == GRP_N - 1) begin
               state <= S_DONE;

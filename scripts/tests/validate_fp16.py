@@ -12,7 +12,7 @@ import math
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from rtl_ops import (
-    fp16_add, fp16_mul, fp16_reduce_k4,
+    fp16_add, fp16_mul, fp16_reduce_k8,
     fp16_from_int, fp16_to_float, fp16_to_q167,
     q115_to_fp16 as rtl_q115_to_fp16, fp16_rsqrt_lut,
     load_lut16, to_signed8,
@@ -177,10 +177,10 @@ def parse_and_validate():
         total_errors = print_section("fp16_mul", mul_results, total_errors)
         total_count += len(mul_results)
 
-    # fp16_reduce_k4
+    # fp16_reduce_k8
     red_pat = re.compile(r"REDUCE \[(\d+)\] got=([0-9a-f]{4})")
     red_results = []
-    inputs_path = os.path.join(MEM, "fp16_reduce_k4_inputs.hex")
+    inputs_path = os.path.join(MEM, "fp16_reduce_k8_inputs.hex")
     N_RED = 16
     if os.path.exists(inputs_path):
         red_in = []
@@ -196,14 +196,14 @@ def parse_and_validate():
                 idx = int(m.group(1))
                 got = int(m.group(2), 16)
                 vals = red_in[idx*N_RED:(idx+1)*N_RED]
-                rtl = fp16_reduce_k4(vals)
+                rtl = fp16_reduce_k8(vals)
                 ideal = sum(fp16_to_float(v) for v in vals)
                 red_results.append({"idx": idx, "got": got,
                                     "rtl": rtl, "ideal": ideal})
 
     if red_results:
-        print(f"Test: fp16_reduce_k4 ({len(red_results)} reductions)")
-        total_errors = print_section("fp16_reduce_k4", red_results, total_errors)
+        print(f"Test: fp16_reduce_k8 ({len(red_results)} reductions)")
+        total_errors = print_section("fp16_reduce_k8", red_results, total_errors)
         total_count += len(red_results)
 
     # fp16_from_int8
@@ -317,20 +317,16 @@ def parse_and_validate():
         total_errors = print_section("fp16_rsqrt", rsqrt_results, total_errors)
         total_count += len(rsqrt_results)
 
-    # matvec_fp16 and matvec_fp16_w16
-    mv_pat = re.compile(r"MV([123]) \[(\d+)\] got=([0-9a-f]{4})")
+    # matvec_fp16_w16
+    mv_pat = re.compile(r"MV([3]) \[(\d+)\] got=([0-9a-f]{4})")
     configs = {
-        "1": {"label": "matvec_fp16 4x4", "stem": "matvec_fp16_4x4",
-              "in_dim": 4, "out_dim": 4, "pack": None},
-        "2": {"label": "matvec_fp16 8x4", "stem": "matvec_fp16_8x4",
-              "in_dim": 4, "out_dim": 8, "pack": None},
-        "3": {"label": "matvec_fp16_w16 64x4", "stem": "matvec_fp16_w16_64x4",
-              "in_dim": 4, "out_dim": 64, "pack": "w16"},
+        "3": {"label": "matvec_fp16_w16 128x4", "stem": "matvec_fp16_w16_128x4",
+              "in_dim": 4, "out_dim": 128, "pack": "w16"},
     }
 
     from rtl_ops import rtl_matvec_fp16, load_hex as load_hex_vals, load_hex_w16
 
-    for mv_id in ["1", "2", "3"]:
+    for mv_id in ["3"]:
         cfg = configs[mv_id]
         stem = cfg["stem"]
         in_dim = cfg["in_dim"]

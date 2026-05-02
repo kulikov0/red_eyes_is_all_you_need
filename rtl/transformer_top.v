@@ -25,11 +25,21 @@ module transformer_top (
   input  wire [7:0]  w_data_i,
   input  wire [15:0] w_scale_i,
 
-  // 128-bit packed weight store interface for per-layer attention and FF matvecs
-  output reg  [3:0]   w16_sel_o,
-  output reg  [15:0]  w16_addr_o,
-  input  wire [127:0] w16_data_i,
-  input  wire [15:0]  w16_scale_i,
+  // Per-tensor weight buses to dedicated banks. layer_idx_o picks which
+  // layer's data each bank returns
+  output wire [1:0]   layer_idx_o,
+  output wire [11:0]  qkv_addr_o,
+  input  wire [127:0] qkv_data_i,
+  input  wire [15:0]  qkv_scale_i,
+  output wire [9:0]   proj_addr_o,
+  input  wire [127:0] proj_data_i,
+  input  wire [15:0]  proj_scale_i,
+  output wire [11:0]  ff_up_addr_o,
+  input  wire [127:0] ff_up_data_i,
+  input  wire [15:0]  ff_up_scale_i,
+  output wire [11:0]  ff_down_addr_o,
+  input  wire [127:0] ff_down_data_i,
+  input  wire [15:0]  ff_down_scale_i,
 
   // Dedicated tok_emb bus shared between embedding and head_proj
   output reg  [10:0]  tok_emb_addr_o,
@@ -117,8 +127,6 @@ module transformer_top (
   reg          tl_start;
   wire [5:0]   tl_w_sel;
   wire [15:0]  tl_w_addr;
-  wire [3:0]   tl_w16_sel;
-  wire [15:0]  tl_w16_addr;
   wire [6:0]   tl_act_raddr;
   wire         tl_res_we;
   wire [6:0]   tl_res_waddr;
@@ -138,40 +146,50 @@ module transformer_top (
   wire [7:0]   tl_v_pos;
   wire [3:0]   tl_v_dim;
 
+  assign layer_idx_o = layer_idx;
+
   transformer_layer u_tl (
-    .clk_i       (clk_i),
-    .rst_i       (rst_i),
-    .start_i     (tl_start),
-    .layer_i     (layer_idx),
-    .pos_i       (pos_r),
-    .act_raddr_o (tl_act_raddr),
-    .act_rdata_i (act_ram[tl_act_raddr]),
-    .res_we_o    (tl_res_we),
-    .res_waddr_o (tl_res_waddr),
-    .res_wdata_o (tl_res_wdata),
-    .w_sel_o     (tl_w_sel),
-    .w_addr_o    (tl_w_addr),
-    .w_data_i    (w_data_i),
-    .w_scale_i   (w_scale_i),
-    .w16_sel_o   (tl_w16_sel),
-    .w16_addr_o  (tl_w16_addr),
-    .w16_data_i  (w16_data_i),
-    .w16_scale_i (w16_scale_i),
-    .k_we_o      (tl_k_we),
-    .k_wdata_o   (tl_k_wdata),
-    .k_layer_o   (tl_k_layer),
-    .k_head_o    (tl_k_head),
-    .k_pos_o     (tl_k_pos),
-    .k_dim_o     (tl_k_dim),
-    .k_rdata_i   (k_rdata_i),
-    .v_we_o      (tl_v_we),
-    .v_wdata_o   (tl_v_wdata),
-    .v_layer_o   (tl_v_layer),
-    .v_head_o    (tl_v_head),
-    .v_pos_o     (tl_v_pos),
-    .v_dim_o     (tl_v_dim),
-    .v_rdata_i   (v_rdata_i),
-    .done_o      (tl_done)
+    .clk_i          (clk_i),
+    .rst_i          (rst_i),
+    .start_i        (tl_start),
+    .layer_i        (layer_idx),
+    .pos_i          (pos_r),
+    .act_raddr_o    (tl_act_raddr),
+    .act_rdata_i    (act_ram[tl_act_raddr]),
+    .res_we_o       (tl_res_we),
+    .res_waddr_o    (tl_res_waddr),
+    .res_wdata_o    (tl_res_wdata),
+    .w_sel_o        (tl_w_sel),
+    .w_addr_o       (tl_w_addr),
+    .w_data_i       (w_data_i),
+    .w_scale_i      (w_scale_i),
+    .qkv_addr_o     (qkv_addr_o),
+    .qkv_data_i     (qkv_data_i),
+    .qkv_scale_i    (qkv_scale_i),
+    .proj_addr_o    (proj_addr_o),
+    .proj_data_i    (proj_data_i),
+    .proj_scale_i   (proj_scale_i),
+    .ff_up_addr_o   (ff_up_addr_o),
+    .ff_up_data_i   (ff_up_data_i),
+    .ff_up_scale_i  (ff_up_scale_i),
+    .ff_down_addr_o (ff_down_addr_o),
+    .ff_down_data_i (ff_down_data_i),
+    .ff_down_scale_i(ff_down_scale_i),
+    .k_we_o         (tl_k_we),
+    .k_wdata_o      (tl_k_wdata),
+    .k_layer_o      (tl_k_layer),
+    .k_head_o       (tl_k_head),
+    .k_pos_o        (tl_k_pos),
+    .k_dim_o        (tl_k_dim),
+    .k_rdata_i      (k_rdata_i),
+    .v_we_o         (tl_v_we),
+    .v_wdata_o      (tl_v_wdata),
+    .v_layer_o      (tl_v_layer),
+    .v_head_o       (tl_v_head),
+    .v_pos_o        (tl_v_pos),
+    .v_dim_o        (tl_v_dim),
+    .v_rdata_i      (v_rdata_i),
+    .done_o         (tl_done)
   );
 
   // KV boundary register: splits the FSM-state -> 32-bank BRAM fanout
@@ -306,20 +324,6 @@ module transformer_top (
       default: begin
         w_sel_o  = 6'd0;
         w_addr_o = 16'd0;
-      end
-    endcase
-  end
-
-  // 128-bit packed weight store mux, active during transformer_layer
-  always @(*) begin
-    case (state)
-      S_LAYER_START, S_LAYER_WAIT: begin
-        w16_sel_o  = tl_w16_sel;
-        w16_addr_o = tl_w16_addr;
-      end
-      default: begin
-        w16_sel_o  = 4'd0;
-        w16_addr_o = 16'd0;
       end
     endcase
   end

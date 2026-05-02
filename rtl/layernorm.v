@@ -3,8 +3,8 @@
 //
 // Reads gamma/beta int8 from weight_store, dequants to fp16
 //
-// MEAN feeds x[idx] into fp16_reduce_k4
-// VAR feeds (x[idx]-mean)^2 via pipelined sub+mul into fp16_reduce_k4
+// MEAN feeds x[idx] into fp16_reduce_k8
+// VAR feeds (x[idx]-mean)^2 via pipelined sub+mul into fp16_reduce_k8
 // NORM pipelined: sub, mul_rsqrt, mul_gamma, add_beta
 //
 // FSM: IDLE -> MEAN_ACC -> MEAN_DIV -> VAR_ACC -> VAR_DIV ->
@@ -81,7 +81,7 @@ module layernorm #(
 
   wire        mean_done;
   wire [15:0] mean_sum;
-  fp16_reduce_k4 u_mean_red (
+  fp16_reduce_k8 u_mean_red (
     .clk_i  (clk_i),
     .rst_i  (rst_i),
     .clear_i(mean_clear),
@@ -129,7 +129,7 @@ module layernorm #(
 
   wire        var_done;
   wire [15:0] var_sum;
-  fp16_reduce_k4 u_var_red (
+  fp16_reduce_k8 u_var_red (
     .clk_i  (clk_i),
     .rst_i  (rst_i),
     .clear_i(var_clear),
@@ -216,11 +216,11 @@ module layernorm #(
   );
 
   // Track idx through the NORM pipeline for gamma/beta/writeback addressing
-  reg [$clog2(DIM)-1:0] idx_pipe [0:9];
+  reg [$clog2(DIM)-1:0] idx_pipe [0:11];
   integer i;
   always @(posedge clk_i) begin
     idx_pipe[0] <= idx[$clog2(DIM)-1:0];
-    for (i = 1; i < 10; i = i + 1) idx_pipe[i] <= idx_pipe[i-1];
+    for (i = 1; i < 12; i = i + 1) idx_pipe[i] <= idx_pipe[i-1];
   end
 
   // gamma_applied = scaled * gamma
@@ -230,7 +230,7 @@ module layernorm #(
     .clk_i(clk_i),
     .valid_i(norm_mul1_v_out),
     .a_i(norm_scaled),
-    .b_i(gamma_buf[idx_pipe[4]]),
+    .b_i(gamma_buf[idx_pipe[5]]),
     .valid_o(norm_mul2_v_out),
     .prod_o(norm_gamma)
   );
@@ -242,7 +242,7 @@ module layernorm #(
     .clk_i(clk_i),
     .valid_i(norm_mul2_v_out),
     .a_i(norm_gamma),
-    .b_i(beta_buf[idx_pipe[6]]),
+    .b_i(beta_buf[idx_pipe[7]]),
     .valid_o(norm_add_v_out),
     .sum_o(norm_out)
   );
@@ -277,7 +277,7 @@ module layernorm #(
 
       if (norm_add_v_out) begin
         y_we_o    <= 1'b1;
-        y_waddr_o <= idx_pipe[9];
+        y_waddr_o <= idx_pipe[11];
         y_wdata_o <= norm_out;
       end
 
@@ -371,7 +371,7 @@ module layernorm #(
         // Flush remaining pipeline results, write captured by add valid_o
         S_NORM_DRAIN: begin
           drain_cnt <= drain_cnt + 4'd1;
-          if (drain_cnt == 4'd10) begin
+          if (drain_cnt == 4'd12) begin
             state <= S_LN_DONE;
           end
         end

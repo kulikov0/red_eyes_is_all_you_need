@@ -1,10 +1,13 @@
-// FP16 adder, 3-cycle pipelined
+// FP16 adder, 4-cycle pipelined
 //
 // IEEE 754 half-precision: sign(1) | exp(5) | mant(10)
 // Flush-to-zero for denormals (exp==0 treated as zero)
 // inf + inf(same sign) = inf, inf + inf(diff sign) = NaN
 // Any NaN input -> NaN output
-// Latency: 3 clock cycles from valid_i to valid_o
+// Latency: 4 clock cycles from valid_i to valid_o
+//
+// s0 holds pre-shift operands so the variable-shift sticky OR is
+// isolated between the s0 and s1 register banks
 
 module fp16_add (
   input  wire        clk_i,
@@ -48,21 +51,11 @@ module fp16_add (
 
   // Alignment: both operands in 14-bit format {0, 1.mmmmmmmmmm, G, R}
   // Extra trailing bits in sm for sticky calculation
-  wire [4:0] exp_diff = lg_exp - sm_exp;
-
-  // lg: 14 bits = {0, mant[10:0], guard=0, round=0}
-  wire [13:0] lg_ext_c = {1'b0, lg_mant, 2'b00};
-
-  // sm: start with same 14-bit format, extend with 13 trailing zeros for shift
-  // Total 27 bits. After right-shift, top 14 = aligned value, bottom 13 = sticky source
-  wire [26:0] sm_wide = {1'b0, sm_mant, 2'b00, 13'b0};
-  wire [26:0] sm_shifted = sm_wide >> exp_diff;
-  wire [13:0] sm_ext_c = sm_shifted[26:13];
-  wire        sticky_c = |sm_shifted[12:0];
-
+  wire [4:0] exp_diff_c = lg_exp - sm_exp;
   wire eff_sub_c = lg_sign ^ sm_sign;
 
-  // Pre-compute special-case result so stage 3 just muxes between it and normal result
+  // Pre-compute special-case result so the final stage just muxes between
+  // it and the normal result
   wire        use_special_c = a_is_nan | b_is_nan | a_is_inf | b_is_inf | a_is_zero | b_is_zero;
   wire [15:0] special_result_c =
     (a_is_nan | b_is_nan)               ? 16'h7E00 :
@@ -72,6 +65,41 @@ module fp16_add (
     (a_is_zero && b_is_zero)            ? {a_sign & b_sign, 15'd0} :
     (a_is_zero)                         ? b_i :
                                           a_i;
+
+  // Stage 0 registers: pre-shift operands, exp_diff, sign/exp of larger,
+  // special bypass. Breaks the source-FF -> unpack/swap route ahead of the
+  // variable shift
+  reg [10:0] s0_lg_mant;
+  reg [10:0] s0_sm_mant;
+  reg [4:0]  s0_lg_exp;
+  reg [4:0]  s0_exp_diff;
+  reg        s0_lg_sign;
+  reg        s0_eff_sub;
+  reg        s0_use_special;
+  reg [15:0] s0_special_result;
+  reg        s0_valid;
+
+  always @(posedge clk_i) begin
+    s0_lg_mant        <= lg_mant;
+    s0_sm_mant        <= sm_mant;
+    s0_lg_exp         <= lg_exp;
+    s0_exp_diff       <= exp_diff_c;
+    s0_lg_sign        <= lg_sign;
+    s0_eff_sub        <= eff_sub_c;
+    s0_use_special    <= use_special_c;
+    s0_special_result <= special_result_c;
+    s0_valid          <= valid_i;
+  end
+
+  // lg: 14 bits = {0, mant[10:0], guard=0, round=0}
+  wire [13:0] lg_ext_c = {1'b0, s0_lg_mant, 2'b00};
+
+  // sm: start with same 14-bit format, extend with 13 trailing zeros for shift
+  // Total 27 bits. After right-shift, top 14 = aligned value, bottom 13 = sticky source
+  wire [26:0] sm_wide = {1'b0, s0_sm_mant, 2'b00, 13'b0};
+  wire [26:0] sm_shifted = sm_wide >> s0_exp_diff;
+  wire [13:0] sm_ext_c = sm_shifted[26:13];
+  wire        sticky_c = |sm_shifted[12:0];
 
   // Stage 1 registers: aligned operands, sticky, sign/exp of larger, special bypass
   reg [13:0] s1_lg_ext;
@@ -88,12 +116,12 @@ module fp16_add (
     s1_lg_ext         <= lg_ext_c;
     s1_sm_ext         <= sm_ext_c;
     s1_sticky         <= sticky_c;
-    s1_eff_sub        <= eff_sub_c;
-    s1_lg_sign        <= lg_sign;
-    s1_lg_exp         <= lg_exp;
-    s1_use_special    <= use_special_c;
-    s1_special_result <= special_result_c;
-    s1_valid          <= valid_i;
+    s1_eff_sub        <= s0_eff_sub;
+    s1_lg_sign        <= s0_lg_sign;
+    s1_lg_exp         <= s0_lg_exp;
+    s1_use_special    <= s0_use_special;
+    s1_special_result <= s0_special_result;
+    s1_valid          <= s0_valid;
   end
 
   // Add or subtract based on effective operation

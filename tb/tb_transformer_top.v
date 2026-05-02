@@ -14,9 +14,11 @@ module tb_transformer_top;
   wire [5:0]  w_sel;
   wire [15:0] w_addr;
   wire [7:0]  w_data;
-  wire [3:0]   w16_sel;
-  wire [15:0]  w16_addr;
-  wire [127:0] w16_data;
+  wire [1:0]   layer_idx;
+  wire [11:0]  qkv_addr,    ff_up_addr,    ff_down_addr;
+  wire [9:0]   proj_addr;
+  wire [127:0] qkv_data,    proj_data,     ff_up_data,   ff_down_data;
+  wire [15:0]  qkv_scale,   proj_scale,    ff_up_scale,  ff_down_scale;
   wire [10:0]  tok_emb_addr;
   wire [127:0] tok_emb_data;
   wire [15:0] tok_emb_scale;
@@ -38,7 +40,6 @@ module tb_transformer_top;
   wire        done;
 
   wire [15:0] w_scale;
-  wire [15:0] w16_scale;
 
   weight_store u_ws (
     .clk_i       (clk),
@@ -48,15 +49,31 @@ module tb_transformer_top;
     .scale_o     (w_scale)
   );
 
-  weight_store_w16 u_ws_w16 (
-    .clk_i           (clk),
-    .w16_sel_i       (w16_sel),
-    .w16_addr_i      (w16_addr),
-    .data_o          (w16_data),
-    .scale_o         (w16_scale),
-    .tok_emb_addr_i  (tok_emb_addr),
-    .tok_emb_data_o  (tok_emb_data),
-    .tok_emb_scale_o (tok_emb_scale)
+  weight_store_qkv u_ws_qkv (
+    .clk_i  (clk), .layer_i(layer_idx),
+    .addr_i (qkv_addr), .data_o(qkv_data), .scale_o(qkv_scale)
+  );
+
+  weight_store_proj u_ws_proj (
+    .clk_i  (clk), .layer_i(layer_idx),
+    .addr_i (proj_addr), .data_o(proj_data), .scale_o(proj_scale)
+  );
+
+  weight_store_ff_up u_ws_ff_up (
+    .clk_i  (clk), .layer_i(layer_idx),
+    .addr_i (ff_up_addr), .data_o(ff_up_data), .scale_o(ff_up_scale)
+  );
+
+  weight_store_ff_down u_ws_ff_down (
+    .clk_i  (clk), .layer_i(layer_idx),
+    .addr_i (ff_down_addr), .data_o(ff_down_data), .scale_o(ff_down_scale)
+  );
+
+  weight_store_tok_emb u_ws_tok_emb (
+    .clk_i  (clk),
+    .addr_i (tok_emb_addr),
+    .data_o (tok_emb_data),
+    .scale_o(tok_emb_scale)
   );
 
   kv_cache u_k_cache (
@@ -91,10 +108,19 @@ module tb_transformer_top;
     .w_addr_o    (w_addr),
     .w_data_i    (w_data),
     .w_scale_i   (w_scale),
-    .w16_sel_o       (w16_sel),
-    .w16_addr_o      (w16_addr),
-    .w16_data_i      (w16_data),
-    .w16_scale_i     (w16_scale),
+    .layer_idx_o     (layer_idx),
+    .qkv_addr_o      (qkv_addr),
+    .qkv_data_i      (qkv_data),
+    .qkv_scale_i     (qkv_scale),
+    .proj_addr_o     (proj_addr),
+    .proj_data_i     (proj_data),
+    .proj_scale_i    (proj_scale),
+    .ff_up_addr_o    (ff_up_addr),
+    .ff_up_data_i    (ff_up_data),
+    .ff_up_scale_i   (ff_up_scale),
+    .ff_down_addr_o  (ff_down_addr),
+    .ff_down_data_i  (ff_down_data),
+    .ff_down_scale_i (ff_down_scale),
     .tok_emb_addr_o  (tok_emb_addr),
     .tok_emb_data_i  (tok_emb_data),
     .tok_emb_scale_i (tok_emb_scale),

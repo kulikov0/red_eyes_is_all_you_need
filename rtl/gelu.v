@@ -4,7 +4,7 @@
 // GELU(x) = x * 0.5 * (1 + erf(x/sqrt(2)))
 // erf is odd-symmetric: fit PWL on |x|, mirror for sign
 // 16 non-uniform segments, breakpoints optimized via EPSS
-// Latency: 12 cycles
+// Latency: 14 cycles
 // Resources: 0 BRAM, 0 DSP from GELU logic itself
 
 module gelu (
@@ -132,25 +132,28 @@ module gelu (
     .sum_o(erf_pos)
   );
 
-  // Track specials flags through 3-cycle add
-  reg add_sign_r1, add_sign_r2, add_sign_r3;
-  reg add_is_zero_r1, add_is_zero_r2, add_is_zero_r3;
-  reg add_saturated_r1, add_saturated_r2, add_saturated_r3;
+  // Track specials flags through 4-cycle add
+  reg add_sign_r1, add_sign_r2, add_sign_r3, add_sign_r4;
+  reg add_is_zero_r1, add_is_zero_r2, add_is_zero_r3, add_is_zero_r4;
+  reg add_saturated_r1, add_saturated_r2, add_saturated_r3, add_saturated_r4;
   always @(posedge clk_i) begin
     add_sign_r1      <= mul_sign_r2;
     add_sign_r2      <= add_sign_r1;
     add_sign_r3      <= add_sign_r2;
+    add_sign_r4      <= add_sign_r3;
     add_is_zero_r1   <= mul_is_zero_r2;
     add_is_zero_r2   <= add_is_zero_r1;
     add_is_zero_r3   <= add_is_zero_r2;
+    add_is_zero_r4   <= add_is_zero_r3;
     add_saturated_r1 <= mul_saturated_r2;
     add_saturated_r2 <= add_saturated_r1;
     add_saturated_r3 <= add_saturated_r2;
+    add_saturated_r4 <= add_saturated_r3;
   end
 
   // Saturated or computed erf, then sign restore (erf is odd-symmetric)
-  wire [15:0] erf_pos_final = add_saturated_r3 ? 16'h3C00 : erf_pos;
-  wire [15:0] erf_val = (add_sign_r3 && !add_is_zero_r3) ?
+  wire [15:0] erf_pos_final = add_saturated_r4 ? 16'h3C00 : erf_pos;
+  wire [15:0] erf_val = (add_sign_r4 && !add_is_zero_r4) ?
                         {1'b1, erf_pos_final[14:0]} : erf_pos_final;
 
   // Register erf result for next stage
@@ -174,15 +177,15 @@ module gelu (
   );
 
   // Shift x_i through to align with final multiply
-  // Latency from x_i to u_mul_final input: 1 (s1) + 2 (mul) + 3 (add) + 1 (erf_r) + 3 (add_one) = 10
-  reg [15:0] x_pipe [0:9];
+  // Latency from x_i to u_mul_final input: 1 (s1) + 2 (mul) + 4 (add) + 1 (erf_r) + 4 (add_one) = 12
+  reg [15:0] x_pipe [0:11];
   integer i;
   always @(posedge clk_i) begin
     x_pipe[0] <= x_i;
-    for (i = 1; i < 10; i = i + 1) x_pipe[i] <= x_pipe[i-1];
+    for (i = 1; i < 12; i = i + 1) x_pipe[i] <= x_pipe[i-1];
   end
 
-  wire [15:0] x_aligned = x_pipe[9];
+  wire [15:0] x_aligned = x_pipe[11];
 
   // half_x = x * 0.5 via exponent decrement; denormals and zero -> 0
   wire [4:0]  x_exp = x_aligned[14:10];

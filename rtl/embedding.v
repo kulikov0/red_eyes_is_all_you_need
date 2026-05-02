@@ -1,6 +1,6 @@
 // Embedding lookup: tok_emb[token_id] * tok_scale + pos_emb[position] * pos_scale.
 //
-// tok_emb lives in weight_store_w16 packed. Each 128-bit word holds rows
+// tok_emb lives in weight_store_tok_emb packed. Each 128-bit word holds rows
 // 16g..16g+15 at the same column, so embedding byte-extracts via token_id[3:0].
 // pos_emb lives in weight_store as bytes.
 
@@ -20,7 +20,7 @@ module embedding #(
   output reg  [15:0] w_addr_o,
   input  wire [7:0]  w_data_i,
 
-  // 128-bit packed tok_emb bus from weight_store_w16
+  // 128-bit packed tok_emb bus from weight_store_tok_emb
   output reg  [10:0]  tok_addr_o,
   input  wire [127:0] tok_data_i,
   input  wire [15:0]  tok_scale_i,
@@ -112,11 +112,11 @@ module embedding #(
   );
 
   // Track write address through the dequant pipeline
-  reg [$clog2(DIM)-1:0] feed_addr_pipe [0:4];
+  reg [$clog2(DIM)-1:0] feed_addr_pipe [0:5];
   integer i;
   always @(posedge clk_i) begin
     feed_addr_pipe[0] <= prev3[$clog2(DIM)-1:0];
-    for (i = 1; i < 5; i = i + 1) feed_addr_pipe[i] <= feed_addr_pipe[i-1];
+    for (i = 1; i < 6; i = i + 1) feed_addr_pipe[i] <= feed_addr_pipe[i-1];
   end
 
   always @(posedge clk_i) begin
@@ -174,12 +174,12 @@ module embedding #(
 
           if (add_v_out) begin
             res_we_o    <= 1'b1;
-            res_waddr_o <= feed_addr_pipe[4];
+            res_waddr_o <= feed_addr_pipe[5];
             res_wdata_o <= sum_fp16;
           end
 
           idx <= idx + 8'd1;
-          if (idx == DIM[7:0] + 8'd7) begin
+          if (idx == DIM[7:0] + 8'd8) begin
             state <= S_DONE;
           end
         end

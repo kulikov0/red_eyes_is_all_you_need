@@ -306,7 +306,7 @@ def gen_fp16_rsqrt_vectors():
       f.write(f'{in_bits:04x}{exp_bits:04x}\n')
   print(f'Wrote {len(vectors)} vectors to {path}')
 
-def gen_fp16_reduce_k4_vectors():
+def gen_fp16_reduce_k8_vectors():
   rng = random.Random(73)
   N = 16
   tests = []
@@ -317,20 +317,24 @@ def gen_fp16_reduce_k4_vectors():
   for _ in range(6):
     tests.append([float_to_fp16(rng.uniform(-10, 10)) for _ in range(N)])
 
-  inputs_path  = os.path.join(MEM_DIR, 'fp16_reduce_k4_inputs.hex')
-  expected_path = os.path.join(MEM_DIR, 'fp16_reduce_k4_expected.hex')
+  inputs_path  = os.path.join(MEM_DIR, 'fp16_reduce_k8_inputs.hex')
+  expected_path = os.path.join(MEM_DIR, 'fp16_reduce_k8_expected.hex')
   with open(inputs_path, 'w') as fi, open(expected_path, 'w') as fe:
     for vals in tests:
       for v in vals:
         fi.write(f'{v:04x}\n')
-      p = [0, 0, 0, 0]
+      p = [0] * 8
       for i, v in enumerate(vals):
-        p[i & 3] = fp16_add(p[i & 3], v)
+        p[i & 7] = fp16_add(p[i & 7], v)
       s01 = fp16_add(p[0], p[1])
       s23 = fp16_add(p[2], p[3])
-      total = fp16_add(s01, s23)
+      s45 = fp16_add(p[4], p[5])
+      s67 = fp16_add(p[6], p[7])
+      s0123 = fp16_add(s01, s23)
+      s4567 = fp16_add(s45, s67)
+      total = fp16_add(s0123, s4567)
       fe.write(f'{total:04x}\n')
-  print(f'Wrote {len(tests)} reduce_k4 tests ({N} inputs each) to {inputs_path} + {expected_path}')
+  print(f'Wrote {len(tests)} reduce_k8 tests, {N} inputs each, to {inputs_path} + {expected_path}')
 
 
 if __name__ == '__main__':
@@ -341,4 +345,4 @@ if __name__ == '__main__':
   gen_fp16_to_q167_vectors()
   gen_q115_to_fp16_vectors()
   gen_fp16_rsqrt_vectors()
-  gen_fp16_reduce_k4_vectors()
+  gen_fp16_reduce_k8_vectors()

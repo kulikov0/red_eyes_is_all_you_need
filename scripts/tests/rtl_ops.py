@@ -267,15 +267,19 @@ def fp16_mul(a, b):
     return normal
 
 
-# K=4 interleaved partial sums + balanced tree reduce
-# Matches RTL hardware that uses 4 round-robin slots over a pipelined fp16_add
-def fp16_reduce_k4(values):
-    p = [0, 0, 0, 0]
+# K=8 interleaved partial sums + balanced tree reduce
+# Matches RTL hardware that uses 8 round-robin slots over a pipelined fp16_add
+def fp16_reduce_k8(values):
+    p = [0] * 8
     for i, v in enumerate(values):
-        p[i & 3] = fp16_add(p[i & 3], v)
+        p[i & 7] = fp16_add(p[i & 7], v)
     s01 = fp16_add(p[0], p[1])
     s23 = fp16_add(p[2], p[3])
-    return fp16_add(s01, s23)
+    s45 = fp16_add(p[4], p[5])
+    s67 = fp16_add(p[6], p[7])
+    s0123 = fp16_add(s01, s23)
+    s4567 = fp16_add(s45, s67)
+    return fp16_add(s0123, s4567)
 
 
 def fp16_negate(bits):
@@ -375,12 +379,12 @@ def fp16_rsqrt_lut(bits, lut):
 def rtl_layernorm_fp16(x_fp16, gamma_fp16, beta_fp16, isqrt_lut):
     n = len(x_fp16)
     inv_n = fp16_from_float(1.0 / n)
-    total = fp16_reduce_k4(x_fp16)
+    total = fp16_reduce_k8(x_fp16)
     mean = fp16_mul(total, inv_n)
     neg_mean = fp16_negate(mean)
     diffs = [fp16_add(v, neg_mean) for v in x_fp16]
     sq = [fp16_mul(d, d) for d in diffs]
-    var_acc = fp16_reduce_k4(sq)
+    var_acc = fp16_reduce_k8(sq)
     var = fp16_mul(var_acc, inv_n)
     inv_std = fp16_rsqrt_lut(var, isqrt_lut)
     out = []
@@ -689,7 +693,7 @@ def rtl_attention_fp16(x_fp16, layer, pos, kv_cache, qkv_w, proj_w,
         for p in range(pos + 1):
             products = [fp16_mul(q_h[d], kv_cache.get((layer, 0, h, p, d), 0x0000))
                         for d in range(HEAD_DIM)]
-            acc = fp16_reduce_k4(products)
+            acc = fp16_reduce_k8(products)
             score_scaled = fp16_mul(acc, INV_SQRT_DK)
             scores_q167.append(_q167_to_signed(fp16_to_q167(score_scaled)))
 
@@ -699,14 +703,25 @@ def rtl_attention_fp16(x_fp16, layer, pos, kv_cache, qkv_w, proj_w,
         # Softmax (unchanged bipartite LUT)
         attn = rtl_softmax(sm_input, lut0, lut1)
 
-        # AV: fp16 accumulation
+        # AV: pair-grouped accumulation matching attention.v's u_av_sum_add
+        # then u_av_acc_add chain. acc = ... + (p0+p1) + (p2+p3) + ...
+        # Partial pair when pos is even forces the upper attn to zero
         for d in range(HEAD_DIM):
             acc = 0x0000
-            for p in range(pos + 1):
-                attn_fp16 = q115_to_fp16(attn[p])
-                v_val = kv_cache.get((layer, 1, h, p, d), 0x0000)
-                prod = fp16_mul(attn_fp16, v_val)
-                acc = fp16_add(acc, prod)
+            p = 0
+            while p <= pos:
+                attn_a = q115_to_fp16(attn[p])
+                v_a    = kv_cache.get((layer, 1, h, p, d), 0x0000)
+                prod_a = fp16_mul(attn_a, v_a)
+                if p + 1 <= pos:
+                    attn_b = q115_to_fp16(attn[p+1])
+                    v_b    = kv_cache.get((layer, 1, h, p+1, d), 0x0000)
+                    prod_b = fp16_mul(attn_b, v_b)
+                else:
+                    prod_b = 0x0000
+                sum_temp = fp16_add(prod_a, prod_b)
+                acc      = fp16_add(acc, sum_temp)
+                p += 2
             head_out[h * HEAD_DIM + d] = acc
 
     # Proj projection: matvec_fp16

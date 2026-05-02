@@ -17,22 +17,41 @@ module tb_weight_store;
     .scale_o     (scale)
   );
 
-  // Clock: 10 ns period
+  // W16 banks
+  reg [1:0]  layer;
+  reg [11:0] qkv_addr;
+  reg [9:0]  proj_addr;
+  reg [11:0] ff_up_addr;
+  reg [11:0] ff_down_addr;
+  reg [10:0] tok_emb_addr;
+  wire [127:0] qkv_data, proj_data, ff_up_data, ff_down_data, tok_emb_data;
+  wire [15:0]  qkv_scale, proj_scale, ff_up_scale, ff_down_scale, tok_emb_scale;
+
+  weight_store_qkv     u_ws_qkv     (.clk_i(clk), .layer_i(layer), .addr_i(qkv_addr),     .data_o(qkv_data),     .scale_o(qkv_scale));
+  weight_store_proj    u_ws_proj    (.clk_i(clk), .layer_i(layer), .addr_i(proj_addr),    .data_o(proj_data),    .scale_o(proj_scale));
+  weight_store_ff_up   u_ws_ff_up   (.clk_i(clk), .layer_i(layer), .addr_i(ff_up_addr),   .data_o(ff_up_data),   .scale_o(ff_up_scale));
+  weight_store_ff_down u_ws_ff_down (.clk_i(clk), .layer_i(layer), .addr_i(ff_down_addr), .data_o(ff_down_data), .scale_o(ff_down_scale));
+  weight_store_tok_emb u_ws_tok_emb (.clk_i(clk),                  .addr_i(tok_emb_addr), .data_o(tok_emb_data), .scale_o(tok_emb_scale));
+
   initial clk = 1'b0;
   always #5 clk = ~clk;
 
-  // Reference arrays compacted to 0..n-1; tsel_lut maps to actual tensor_sel
   reg [7:0]  exp_first [0:18];
   reg [7:0]  exp_last  [0:18];
   reg [15:0] last_addr [0:18];
   reg [5:0]  tsel_lut  [0:18];
+
+  reg [7:0] qkv_first     [0:3], qkv_last     [0:3];
+  reg [7:0] proj_first    [0:3], proj_last    [0:3];
+  reg [7:0] ff_up_first   [0:3], ff_up_last   [0:3];
+  reg [7:0] ff_down_first [0:3], ff_down_last [0:3];
+  reg [5:0] qkv_idx [0:3], proj_idx [0:3], ff_up_idx [0:3], ff_down_idx [0:3];
 
   integer errors;
   integer i;
   integer fd;
 
   initial begin
-    // Expected first bytes
     exp_first[ 0] = 8'hfa;  exp_first[ 1] = 8'h5c;
     exp_first[ 2] = 8'hcb;  exp_first[ 3] = 8'h69;
     exp_first[ 4] = 8'h07;  exp_first[ 5] = 8'h62;
@@ -44,7 +63,6 @@ module tb_weight_store;
     exp_first[16] = 8'hac;  exp_first[17] = 8'h64;
     exp_first[18] = 8'hcf;
 
-    // Expected last bytes
     exp_last[ 0] = 8'h11;  exp_last[ 1] = 8'h5c;
     exp_last[ 2] = 8'he3;  exp_last[ 3] = 8'h71;
     exp_last[ 4] = 8'hca;  exp_last[ 5] = 8'h66;
@@ -56,7 +74,6 @@ module tb_weight_store;
     exp_last[16] = 8'h9b;  exp_last[17] = 8'h5c;
     exp_last[18] = 8'haa;
 
-    // Last addresses (depth - 1)
     last_addr[ 0] = 16'd32767;  last_addr[ 1] = 16'd127;
     last_addr[ 2] = 16'd127;  last_addr[ 3] = 16'd127;
     last_addr[ 4] = 16'd127;  last_addr[ 5] = 16'd127;
@@ -68,7 +85,6 @@ module tb_weight_store;
     last_addr[16] = 16'd127;  last_addr[17] = 16'd127;
     last_addr[18] = 16'd127;
 
-    // Compact iteration index -> tensor_sel mapping
     tsel_lut[ 0] = 6'd1;  tsel_lut[ 1] = 6'd2;
     tsel_lut[ 2] = 6'd3;  tsel_lut[ 3] = 6'd6;
     tsel_lut[ 4] = 6'd7;  tsel_lut[ 5] = 6'd10;
@@ -80,19 +96,51 @@ module tb_weight_store;
     tsel_lut[16] = 6'd31;  tsel_lut[17] = 6'd34;
     tsel_lut[18] = 6'd35;
 
-    errors = 0;
+    qkv_first[0] = 8'hfb;  qkv_last[0]  = 8'h0c;
+    qkv_idx[0]   = 6'd4;  qkv_first[1] = 8'h00;
+    qkv_last[1]  = 8'hf8;  qkv_idx[1]   = 6'd12;
+    qkv_first[2] = 8'hf9;  qkv_last[2]  = 8'hff;
+    qkv_idx[2]   = 6'd20;  qkv_first[3] = 8'hfd;
+    qkv_last[3]  = 8'h0b;  qkv_idx[3]   = 6'd28;
 
-    // Open log file
+    proj_first[0] = 8'he8;  proj_last[0]  = 8'h2a;
+    proj_idx[0]   = 6'd5;  proj_first[1] = 8'hf1;
+    proj_last[1]  = 8'h05;  proj_idx[1]   = 6'd13;
+    proj_first[2] = 8'h00;  proj_last[2]  = 8'h01;
+    proj_idx[2]   = 6'd21;  proj_first[3] = 8'h0f;
+    proj_last[3]  = 8'h25;  proj_idx[3]   = 6'd29;
+
+    ff_up_first[0] = 8'hf7;  ff_up_last[0]  = 8'hee;
+    ff_up_idx[0]   = 6'd8;  ff_up_first[1] = 8'hec;
+    ff_up_last[1]  = 8'hf5;  ff_up_idx[1]   = 6'd16;
+    ff_up_first[2] = 8'hfc;  ff_up_last[2]  = 8'hef;
+    ff_up_idx[2]   = 6'd24;  ff_up_first[3] = 8'h26;
+    ff_up_last[3]  = 8'hf8;  ff_up_idx[3]   = 6'd32;
+
+    ff_down_first[0] = 8'h12;  ff_down_last[0]  = 8'h10;
+    ff_down_idx[0]   = 6'd9;  ff_down_first[1] = 8'h07;
+    ff_down_last[1]  = 8'hfb;  ff_down_idx[1]   = 6'd17;
+    ff_down_first[2] = 8'hf9;  ff_down_last[2]  = 8'hf7;
+    ff_down_idx[2]   = 6'd25;  ff_down_first[3] = 8'h19;
+    ff_down_last[3]  = 8'h03;  ff_down_idx[3]   = 6'd33;
+
+    errors = 0;
+    layer        = 2'd0;
+    qkv_addr     = 12'd0;
+    proj_addr    = 10'd0;
+    ff_up_addr   = 12'd0;
+    ff_down_addr = 12'd0;
+    tok_emb_addr = 11'd0;
+
     fd = $fopen("/home/user/red_eyes_is_all_you_need/logs/tb_weight_store.log", "w");
 
-    // Wait for ROMs to initialize
     #20;
 
     $display("=== Weight Store Testbench ===");
     $fwrite(fd, "=== Weight Store Testbench ===\n");
 
+    // 8-bit LN store: first and last byte of each tensor
     for (i = 0; i < 19; i = i + 1) begin
-      // Test first byte (addr 0)
       tensor_sel = tsel_lut[i];
       addr       = 16'd0;
       @(posedge clk);
@@ -108,7 +156,6 @@ module tb_weight_store;
         $fwrite(fd, "OK   tensor %0d  addr=0  data=0x%02x  scale=0x%08x\n", tsel_lut[i], data, scale);
       end
 
-      // Test last byte (addr = last_addr)
       addr = last_addr[i];
       @(posedge clk);
       @(posedge clk);
@@ -126,12 +173,158 @@ module tb_weight_store;
       end
     end
 
-    if (errors == 0) begin
-      $display("=== All 38 tests passed ===");
-      $fwrite(fd, "=== All 38 tests passed ===\n");
+    // W16 banks: per layer, byte 0 of word 0 (first tensor byte) and byte 15
+    // of word depth-1 (last tensor byte). 2-cycle read latency: addr_r reg
+    // plus BRAM output reg
+    for (i = 0; i < 4; i = i + 1) begin
+      layer    = i[1:0];
+      qkv_addr = 12'd0;
+      @(posedge clk);
+      @(posedge clk);
+      #1;
+      if (qkv_data[7:0] !== qkv_first[i]) begin
+        $display("FAIL tensor %0d first: got 0x%02x, expected 0x%02x", qkv_idx[i], qkv_data[7:0], qkv_first[i]);
+        $fwrite(fd, "FAIL tensor %0d first: got 0x%02x, expected 0x%02x\n", qkv_idx[i], qkv_data[7:0], qkv_first[i]);
+        errors = errors + 1;
+      end else begin
+        $display("OK   tensor %0d  addr=0  data=0x%02x", qkv_idx[i], qkv_data[7:0]);
+        $fwrite(fd, "OK   tensor %0d  addr=0  data=0x%02x\n", qkv_idx[i], qkv_data[7:0]);
+      end
+
+      qkv_addr = 12'd3071;
+      @(posedge clk);
+      @(posedge clk);
+      #1;
+      if (qkv_data[127:120] !== qkv_last[i]) begin
+        $display("FAIL tensor %0d last: got 0x%02x, exp 0x%02x", qkv_idx[i], qkv_data[127:120], qkv_last[i]);
+        $fwrite(fd, "FAIL tensor %0d last: got 0x%02x, exp 0x%02x\n", qkv_idx[i], qkv_data[127:120], qkv_last[i]);
+        errors = errors + 1;
+      end else begin
+        $display("OK   tensor %0d  addr=%0d  data=0x%02x", qkv_idx[i], qkv_addr, qkv_data[127:120]);
+        $fwrite(fd, "OK   tensor %0d  addr=%0d  data=0x%02x\n", qkv_idx[i], qkv_addr, qkv_data[127:120]);
+      end
+    end
+
+    for (i = 0; i < 4; i = i + 1) begin
+      layer     = i[1:0];
+      proj_addr = 10'd0;
+      @(posedge clk);
+      @(posedge clk);
+      #1;
+      if (proj_data[7:0] !== proj_first[i]) begin
+        $display("FAIL tensor %0d first: got 0x%02x, expected 0x%02x", proj_idx[i], proj_data[7:0], proj_first[i]);
+        $fwrite(fd, "FAIL tensor %0d first: got 0x%02x, expected 0x%02x\n", proj_idx[i], proj_data[7:0], proj_first[i]);
+        errors = errors + 1;
+      end else begin
+        $display("OK   tensor %0d  addr=0  data=0x%02x", proj_idx[i], proj_data[7:0]);
+        $fwrite(fd, "OK   tensor %0d  addr=0  data=0x%02x\n", proj_idx[i], proj_data[7:0]);
+      end
+
+      proj_addr = 10'd1023;
+      @(posedge clk);
+      @(posedge clk);
+      #1;
+      if (proj_data[127:120] !== proj_last[i]) begin
+        $display("FAIL tensor %0d last: got 0x%02x, exp 0x%02x", proj_idx[i], proj_data[127:120], proj_last[i]);
+        $fwrite(fd, "FAIL tensor %0d last: got 0x%02x, exp 0x%02x\n", proj_idx[i], proj_data[127:120], proj_last[i]);
+        errors = errors + 1;
+      end else begin
+        $display("OK   tensor %0d  addr=%0d  data=0x%02x", proj_idx[i], proj_addr, proj_data[127:120]);
+        $fwrite(fd, "OK   tensor %0d  addr=%0d  data=0x%02x\n", proj_idx[i], proj_addr, proj_data[127:120]);
+      end
+    end
+
+    for (i = 0; i < 4; i = i + 1) begin
+      layer      = i[1:0];
+      ff_up_addr = 12'd0;
+      @(posedge clk);
+      @(posedge clk);
+      #1;
+      if (ff_up_data[7:0] !== ff_up_first[i]) begin
+        $display("FAIL tensor %0d first: got 0x%02x, expected 0x%02x", ff_up_idx[i], ff_up_data[7:0], ff_up_first[i]);
+        $fwrite(fd, "FAIL tensor %0d first: got 0x%02x, expected 0x%02x\n", ff_up_idx[i], ff_up_data[7:0], ff_up_first[i]);
+        errors = errors + 1;
+      end else begin
+        $display("OK   tensor %0d  addr=0  data=0x%02x", ff_up_idx[i], ff_up_data[7:0]);
+        $fwrite(fd, "OK   tensor %0d  addr=0  data=0x%02x\n", ff_up_idx[i], ff_up_data[7:0]);
+      end
+
+      ff_up_addr = 12'd4095;
+      @(posedge clk);
+      @(posedge clk);
+      #1;
+      if (ff_up_data[127:120] !== ff_up_last[i]) begin
+        $display("FAIL tensor %0d last: got 0x%02x, exp 0x%02x", ff_up_idx[i], ff_up_data[127:120], ff_up_last[i]);
+        $fwrite(fd, "FAIL tensor %0d last: got 0x%02x, exp 0x%02x\n", ff_up_idx[i], ff_up_data[127:120], ff_up_last[i]);
+        errors = errors + 1;
+      end else begin
+        $display("OK   tensor %0d  addr=%0d  data=0x%02x", ff_up_idx[i], ff_up_addr, ff_up_data[127:120]);
+        $fwrite(fd, "OK   tensor %0d  addr=%0d  data=0x%02x\n", ff_up_idx[i], ff_up_addr, ff_up_data[127:120]);
+      end
+    end
+
+    for (i = 0; i < 4; i = i + 1) begin
+      layer        = i[1:0];
+      ff_down_addr = 12'd0;
+      @(posedge clk);
+      @(posedge clk);
+      #1;
+      if (ff_down_data[7:0] !== ff_down_first[i]) begin
+        $display("FAIL tensor %0d first: got 0x%02x, expected 0x%02x", ff_down_idx[i], ff_down_data[7:0], ff_down_first[i]);
+        $fwrite(fd, "FAIL tensor %0d first: got 0x%02x, expected 0x%02x\n", ff_down_idx[i], ff_down_data[7:0], ff_down_first[i]);
+        errors = errors + 1;
+      end else begin
+        $display("OK   tensor %0d  addr=0  data=0x%02x", ff_down_idx[i], ff_down_data[7:0]);
+        $fwrite(fd, "OK   tensor %0d  addr=0  data=0x%02x\n", ff_down_idx[i], ff_down_data[7:0]);
+      end
+
+      ff_down_addr = 12'd4095;
+      @(posedge clk);
+      @(posedge clk);
+      #1;
+      if (ff_down_data[127:120] !== ff_down_last[i]) begin
+        $display("FAIL tensor %0d last: got 0x%02x, exp 0x%02x", ff_down_idx[i], ff_down_data[127:120], ff_down_last[i]);
+        $fwrite(fd, "FAIL tensor %0d last: got 0x%02x, exp 0x%02x\n", ff_down_idx[i], ff_down_data[127:120], ff_down_last[i]);
+        errors = errors + 1;
+      end else begin
+        $display("OK   tensor %0d  addr=%0d  data=0x%02x", ff_down_idx[i], ff_down_addr, ff_down_data[127:120]);
+        $fwrite(fd, "OK   tensor %0d  addr=%0d  data=0x%02x\n", ff_down_idx[i], ff_down_addr, ff_down_data[127:120]);
+      end
+    end
+
+    // tok_emb has no layer dimension
+    tok_emb_addr = 11'd0;
+    @(posedge clk);
+    @(posedge clk);
+    #1;
+    if (tok_emb_data[7:0] !== 8'h67) begin
+      $display("FAIL tensor 0 first: got 0x%02x, expected 0x67", tok_emb_data[7:0]);
+      $fwrite(fd, "FAIL tensor 0 first: got 0x%02x, expected 0x67\n", tok_emb_data[7:0]);
+      errors = errors + 1;
     end else begin
-      $display("=== %0d errors out of 38 ===", errors);
-      $fwrite(fd, "=== %0d errors out of 38 ===\n", errors);
+      $display("OK   tensor 0  addr=0  data=0x%02x", tok_emb_data[7:0]);
+      $fwrite(fd, "OK   tensor 0  addr=0  data=0x%02x\n", tok_emb_data[7:0]);
+    end
+
+    tok_emb_addr = 11'd2047;
+    @(posedge clk);
+    @(posedge clk);
+    #1;
+    if (tok_emb_data[127:120] !== 8'h09) begin
+      $display("FAIL tensor 0 last: got 0x%02x, exp 0x09", tok_emb_data[127:120]);
+      $fwrite(fd, "FAIL tensor 0 last: got 0x%02x, exp 0x09\n", tok_emb_data[127:120]);
+      errors = errors + 1;
+    end else begin
+      $display("OK   tensor 0  addr=%0d  data=0x%02x", tok_emb_addr, tok_emb_data[127:120]);
+      $fwrite(fd, "OK   tensor 0  addr=%0d  data=0x%02x\n", tok_emb_addr, tok_emb_data[127:120]);
+    end
+
+    if (errors == 0) begin
+      $display("=== All 72 tests passed ===");
+      $fwrite(fd, "=== All 72 tests passed ===\n");
+    end else begin
+      $display("=== %0d errors out of 72 ===", errors);
+      $fwrite(fd, "=== %0d errors out of 72 ===\n", errors);
     end
 
     $fclose(fd);

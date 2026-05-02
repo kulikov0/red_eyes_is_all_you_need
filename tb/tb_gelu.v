@@ -23,8 +23,7 @@ module tb_gelu;
   reg [15:0] test_mem [0:N_TESTS-1];
   initial $readmemh("/home/user/red_eyes_is_all_you_need/mem/gelu_test_inputs.hex", test_mem);
 
-  // Pipeline tracking: GELU is 12-cycle pipelined, tracker is 12 deep
-  localparam GELU_LAT = 12;
+  localparam GELU_LAT = 14;
   reg [15:0] pipe_x [0:GELU_LAT-1];
 
   integer fd, i, j, out_count;
