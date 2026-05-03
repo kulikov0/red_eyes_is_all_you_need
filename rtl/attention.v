@@ -280,8 +280,10 @@ module attention (
   // sc_partial_pipe tracks sc_partial_pair through the 4-stage bram_v pipeline
   // so the mul valid for upper half can be gated when the upper pos is invalid
   reg [3:0] sc_partial_pipe;
-  always @(posedge clk_i)
-    sc_partial_pipe <= {sc_partial_pipe[2:0], sc_partial_pair && sc_issue};
+  always @(posedge clk_i) begin
+    if (rst_i) sc_partial_pipe <= 4'b0000;
+    else       sc_partial_pipe <= {sc_partial_pipe[2:0], sc_partial_pair && sc_issue};
+  end
 
   wire        sc_mul_a_v_out, sc_mul_b_v_out;
   wire [15:0] sc_mac_prod_a, sc_mac_prod_b;
@@ -552,7 +554,6 @@ module attention (
       sc_red_c_hi_pend <= 1'b0;
       sc_red_d_lo_pend <= 1'b0;
       sc_red_d_hi_pend <= 1'b0;
-      sc_partial_pipe  <= 4'b0000;
       sm_a_busy      <= 1'b0;
       sm_b_busy      <= 1'b0;
       sm_a_out_cnt   <= 8'd0;

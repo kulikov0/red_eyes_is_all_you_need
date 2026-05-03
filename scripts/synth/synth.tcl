@@ -8,6 +8,8 @@ add_files $proj_dir/rtl/gelu_pwl_coeffs.vh
 set_property include_dirs $proj_dir/rtl [current_fileset]
 
 add_files -fileset constrs_1 $proj_dir/constraints/ax7203.xdc
+add_files -fileset constrs_1 $proj_dir/constraints/ax7203_impl.xdc
+set_property USED_IN_SYNTHESIS false [get_files $proj_dir/constraints/ax7203_impl.xdc]
 set_property top top [current_fileset]
 
 synth_design -top top -part xc7a200tfbg484-2

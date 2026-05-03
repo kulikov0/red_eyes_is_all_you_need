@@ -73,6 +73,7 @@ VAL_MAP=(
   [tb_gelu]=validate_gelu.py
   [tb_kv_cache]=validate_kv_cache.py
   [tb_layernorm]=validate_layernorm.py
+  [tb_sampler]=validate_sampler.py
   [tb_softmax]=validate_softmax.py
   [tb_transformer_layer]=validate_transformer_layer.py
   [tb_transformer_layer_stress]="validate_transformer_layer.py logs/tb_transformer_layer_stress.log"

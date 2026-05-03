@@ -28,7 +28,15 @@ def main():
     parser.add_argument("--temperature", type=float, default=0.4, help="Sampling temperature")
     parser.add_argument("--top-k", type=int, default=10, help="Top-k sampling")
     parser.add_argument("--repeat-penalty", type=float, default=1.3, help="Repetition penalty")
+    parser.add_argument("--seed", type=int, default=None, help="Torch RNG seed for reproducible sampling")
     args = parser.parse_args()
+
+    if args.seed is not None:
+        torch.manual_seed(args.seed)
+        if torch.backends.mps.is_available():
+            torch.mps.manual_seed(args.seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(args.seed)
 
     print(f"Device: {cfg.device}")
     print(f"Loading weights: {args.weights}")

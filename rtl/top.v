@@ -180,6 +180,12 @@ module top (
   wire       tf_busy;
   wire       tf_done;
 
+  reg [15:0] cfg_inv_temp;
+  reg [7:0]  cfg_top_k;
+  reg [15:0] cfg_seed;
+  reg        cfg_seed_load;
+  reg [2:0]  cfg_cnt;
+
   transformer_top u_tf (
     .clk_i       (clk),
     .rst_i       (rst),
@@ -220,6 +226,10 @@ module top (
     .v_pos_o     (v_pos),
     .v_dim_o     (v_dim),
     .v_rdata_i   (v_rdata),
+    .inv_temp_i  (cfg_inv_temp),
+    .top_k_i     (cfg_top_k),
+    .seed_load_i (cfg_seed_load),
+    .seed_i      (cfg_seed),
     .token_o     (tf_token_out),
     .token_valid_o(tf_token_valid),
     .busy_o      (tf_busy),
@@ -238,25 +248,33 @@ module top (
                    S_PROMPT   = 3'd1,
                    S_GENERATE = 3'd2,
                    S_TX_WAIT  = 3'd3,
-                   S_TX_DONE  = 3'd4;
+                   S_TX_DONE  = 3'd4,
+                   S_CFG      = 3'd5;
 
   reg [2:0] ctl_state;
   reg       gen_started;
 
   localparam CMD_GENERATE = 8'hFF;
+  localparam CMD_CONFIG   = 8'hFE;
 
   always @(posedge clk) begin
     if (rst) begin
-      ctl_state   <= S_WAIT_CMD;
-      tf_start    <= 1'b0;
-      tf_generate <= 1'b0;
-      tf_token_in <= 8'd0;
-      tx_start    <= 1'b0;
-      tx_data     <= 8'd0;
-      gen_started <= 1'b0;
+      ctl_state     <= S_WAIT_CMD;
+      tf_start      <= 1'b0;
+      tf_generate   <= 1'b0;
+      tf_token_in   <= 8'd0;
+      tx_start      <= 1'b0;
+      tx_data       <= 8'd0;
+      gen_started   <= 1'b0;
+      cfg_inv_temp  <= 16'h3C00;
+      cfg_top_k     <= 8'd1;
+      cfg_seed      <= 16'hACE1;
+      cfg_seed_load <= 1'b0;
+      cfg_cnt       <= 3'd0;
     end else begin
-      tf_start <= 1'b0;
-      tx_start <= 1'b0;
+      tf_start      <= 1'b0;
+      tx_start      <= 1'b0;
+      cfg_seed_load <= 1'b0;
 
       case (ctl_state)
 
@@ -269,6 +287,9 @@ module top (
               tf_start    <= 1'b1;
               gen_started <= 1'b0;
               ctl_state   <= S_GENERATE;
+            end else if (rx_data == CMD_CONFIG) begin
+              cfg_cnt   <= 3'd0;
+              ctl_state <= S_CFG;
             end else begin
               // Prompt token: run forward pass to fill KV cache
               tf_token_in <= rx_data;
@@ -276,6 +297,25 @@ module top (
               tf_start    <= 1'b1;
               ctl_state   <= S_PROMPT;
             end
+          end
+        end
+
+        // 5 bytes follow CMD_CONFIG: inv_temp lo, inv_temp hi, top_k, seed lo, seed hi
+        S_CFG: begin
+          if (rx_valid) begin
+            case (cfg_cnt)
+              3'd0: cfg_inv_temp[7:0]  <= rx_data;
+              3'd1: cfg_inv_temp[15:8] <= rx_data;
+              3'd2: cfg_top_k          <= rx_data;
+              3'd3: cfg_seed[7:0]      <= rx_data;
+              3'd4: begin
+                cfg_seed[15:8] <= rx_data;
+                cfg_seed_load  <= 1'b1;
+                ctl_state      <= S_WAIT_CMD;
+              end
+              default: ;
+            endcase
+            cfg_cnt <= cfg_cnt + 3'd1;
           end
         end
 

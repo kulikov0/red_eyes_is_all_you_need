@@ -8,16 +8,26 @@ Usage:
   python3 uart_inference.py                    # default: "A", 50 tokens
   python3 uart_inference.py "Hello" 100        # prompt string, 100 tokens
   python3 uart_inference.py --port /dev/cu.usbserial-110 "Hi"
+  python3 uart_inference.py --temp 0.8 --top-k 16 --seed 44257 "Hi"
 """
 
 import sys
 import os
 import argparse
+import random
+import struct
 import time
 import serial
 
 
 CMD_GENERATE = 0xFF
+CMD_CONFIG   = 0xFE
+SAMPLER_K_MAX = 16
+
+
+# Convert positive Python float to IEEE 754 fp16 bit pattern
+def fp16_bits(f):
+    return struct.unpack("<H", struct.pack("<e", float(f)))[0]
 
 
 # Human-readable token: printable ASCII or hex
@@ -42,6 +52,12 @@ def main():
     parser.add_argument("--port", default="/dev/cu.usbserial-110",
                         help="Serial port")
     parser.add_argument("--baud", type=int, default=115200)
+    parser.add_argument("--temp", type=float, default=None,
+                        help="Sampling temperature; default = greedy")
+    parser.add_argument("--top-k", type=int, default=None,
+                        help=f"Top-k cutoff; 1 = greedy, 0 = full vocab, max = {SAMPLER_K_MAX}")
+    parser.add_argument("--seed", type=int, default=None,
+                        help="LFSR seed integer 1..65535; random if omitted")
     args = parser.parse_args()
 
     prompt_bytes = [ord(c) for c in args.prompt if ord(c) < 256]
@@ -49,18 +65,51 @@ def main():
         print("Error: empty prompt")
         sys.exit(1)
 
-    # Check for 0xFF in prompt (reserved for generate command)
-    if CMD_GENERATE in prompt_bytes:
-        print("Error: prompt cannot contain 0xFF (reserved)")
-        sys.exit(1)
+    # 0xFE and 0xFF are reserved for CMD_CONFIG and CMD_GENERATE
+    for reserved in (CMD_GENERATE, CMD_CONFIG):
+        if reserved in prompt_bytes:
+            print(f"Error: prompt cannot contain 0x{reserved:02X}")
+            sys.exit(1)
+
+    send_cfg = (args.temp is not None or args.top_k is not None
+                or args.seed is not None)
+    if send_cfg:
+        temp = args.temp if args.temp is not None else 1.0
+        if temp <= 0.0:
+            print("Error: --temp must be positive")
+            sys.exit(1)
+        inv_temp_bits = fp16_bits(1.0 / temp)
+        top_k = args.top_k if args.top_k is not None else 1
+        if top_k != 0 and not (1 <= top_k <= SAMPLER_K_MAX):
+            print(f"Error: --top-k must be 0 or in 1..{SAMPLER_K_MAX}")
+            sys.exit(1)
+        seed = args.seed if args.seed is not None else random.randint(1, 0xFFFF)
+        if not (1 <= seed <= 0xFFFF):
+            print("Error: --seed must be in 1..65535")
+            sys.exit(1)
+        cfg_bytes = bytes([
+            inv_temp_bits & 0xFF, (inv_temp_bits >> 8) & 0xFF,
+            top_k,
+            seed & 0xFF, (seed >> 8) & 0xFF,
+        ])
 
     print(f"Port: {args.port}")
     print(f"Prompt: {repr(args.prompt)} ({len(prompt_bytes)} tokens)")
     print(f"Max generate: {args.max_tokens}")
+    if send_cfg:
+        print(f"Config: temp={temp} top_k={top_k} seed={seed}")
     print()
 
     ser = serial.Serial(args.port, args.baud, timeout=30)
     ser.reset_input_buffer()
+
+    if send_cfg:
+        ser.write(bytes([CMD_CONFIG]))
+        time.sleep(0.05)
+        for b in cfg_bytes:
+            ser.write(bytes([b]))
+            time.sleep(0.05)
+        print("Config sent")
 
     print("Sending prompt...", end="", flush=True)
     for i, tok in enumerate(prompt_bytes):
@@ -74,11 +123,15 @@ def main():
     ser.write(bytes([CMD_GENERATE]))
     print()
 
-    # Receive generated tokens
-    print("Output: ", end="", flush=True)
+    # FPGA stops at pos_r=255, so emits at most (256 - prompt_len) tokens
+    expected = min(args.max_tokens, 256 - len(prompt_bytes))
+
+    print("Output:\n")
+    sys.stdout.write("".join(token_repr(b) for b in prompt_bytes))
+    sys.stdout.flush()
     t0 = time.time()
     received = 0
-    for _ in range(args.max_tokens):
+    for _ in range(expected):
         data = ser.read(1)
         if not data:
             print("\n[timeout - no response]")

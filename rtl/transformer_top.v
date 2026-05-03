@@ -64,6 +64,12 @@ module transformer_top (
   output reg  [3:0]  v_dim_o,
   input  wire [31:0] v_rdata_i,
 
+  // Sampler config
+  input  wire [15:0] inv_temp_i,
+  input  wire [7:0]  top_k_i,
+  input  wire        seed_load_i,
+  input  wire [15:0] seed_i,
+
   // Output
   output reg  [7:0]  token_o,
   output reg         token_valid_o,
@@ -298,6 +304,10 @@ module transformer_top (
     .clk_i        (clk_i),
     .rst_i        (rst_i),
     .start_i      (samp_start),
+    .inv_temp_i   (inv_temp_i),
+    .top_k_i      (top_k_i),
+    .seed_load_i  (seed_load_i),
+    .seed_i       (seed_i),
     .logit_raddr_o(samp_logit_raddr),
     .logit_rdata_i(act_ram[samp_logit_raddr]),
     .token_o      (samp_token),

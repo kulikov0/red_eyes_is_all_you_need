@@ -10,8 +10,10 @@ import math
 
 from rtl_ops import (
     DIM, N_HEADS, HEAD_DIM, N_LAYERS, VOCAB, LN_OFFSETS, FRAC_W,
+    SAMPLER_K_MAX,
     to_signed8,
     fp16_to_float, fp16_from_float, fp16_from_int, fp16_mul, fp16_pack,
+    lfsr16_next,
     _dequant_ln_fp16,
 )
 
@@ -237,3 +239,37 @@ def ideal_forward_fp16(token_id, position, kv_cache_f,
     # Head projection (weight-tied with tok_emb)
     head_f = ideal_matvec_float(x, tok_emb_w, VOCAB, DIM, tok_scale_bits)
     return [fp16_from_float(v) for v in head_f]
+
+
+# Float64 sampler. Same LFSR as RTL so the random source is comparable
+def ideal_sample_token(logits_fp16, inv_temp_bits, top_k, lfsr_state):
+    inv_temp = fp16_to_float(inv_temp_bits)
+    scaled = [fp16_to_float(x) * inv_temp for x in logits_fp16]
+    max_x = max(scaled)
+    exps = [math.exp(x - max_x) for x in scaled]
+    s = sum(exps)
+    probs = [e / s for e in exps]
+    n = len(probs)
+
+    k_eff = n if (top_k == 0 or top_k > SAMPLER_K_MAX) else top_k
+
+    order = sorted(range(n), key=lambda i: (-probs[i], i))
+    keep = set(order[:k_eff])
+
+    sum_topk = sum(probs[i] for i in keep)
+    lfsr_next = lfsr16_next(lfsr_state)
+
+    if sum_topk == 0:
+        return min(keep), lfsr_next
+
+    r = (lfsr_next / 65536.0) * sum_topk
+
+    cum = 0.0
+    for i in range(n):
+        if i not in keep:
+            continue
+        cum += probs[i]
+        if cum > r:
+            return i, lfsr_next
+
+    return max(keep), lfsr_next

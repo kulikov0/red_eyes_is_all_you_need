@@ -831,3 +831,64 @@ def rtl_forward_fp16(token_id, position, kv_cache,
 
     # Head projection (weight-tied with tok_emb)
     return rtl_head_projection_fp16(x, tok_emb_w, tok_scale_bits)
+
+
+SAMPLER_K_MAX = 16
+
+
+# 16-bit Fibonacci LFSR, polynomial x^16 + x^14 + x^13 + x^11 + 1
+def lfsr16_next(state):
+    new_bit = ((state >> 15) ^ (state >> 13) ^ (state >> 12) ^ (state >> 10)) & 1
+    return ((state << 1) | new_bit) & 0xFFFF
+
+
+# Top-k via K-register array: init-fill, then strict-greater replace at min slot
+# Min-slot tie: lowest array index among min-value slots
+# Input tie: prob equal to current min does not enter, so earlier idx wins
+def rtl_sample_token(logits_fp16, inv_temp_bits, top_k, lfsr_state, lut0, lut1):
+    scaled = [fp16_mul(x, inv_temp_bits) for x in logits_fp16]
+    sm_in = [_q167_to_signed(fp16_to_q167(x)) for x in scaled]
+    probs = rtl_softmax(sm_in, lut0, lut1)
+    n = len(probs)
+
+    k_eff = n if (top_k == 0 or top_k > SAMPLER_K_MAX) else top_k
+
+    slots = []
+    for i, p in enumerate(probs):
+        if len(slots) < k_eff:
+            slots.append((p, i))
+        else:
+            min_slot = 0
+            for j in range(1, k_eff):
+                if slots[j][0] < slots[min_slot][0]:
+                    min_slot = j
+            if p > slots[min_slot][0]:
+                slots[min_slot] = (p, i)
+
+    keep_mask = [0] * n
+    for _, idx in slots:
+        keep_mask[idx] = 1
+
+    sum_topk = sum(probs[i] for i in range(n) if keep_mask[i])
+    lfsr_next = lfsr16_next(lfsr_state)
+
+    if sum_topk == 0:
+        for i in range(n):
+            if keep_mask[i]:
+                return i, lfsr_next
+        return 0, lfsr_next
+
+    r_target = (lfsr_next * sum_topk) >> 16
+
+    cum = 0
+    for i in range(n):
+        if not keep_mask[i]:
+            continue
+        cum += probs[i]
+        if cum > r_target:
+            return i, lfsr_next
+
+    for i in range(n - 1, -1, -1):
+        if keep_mask[i]:
+            return i, lfsr_next
+    return 0, lfsr_next
