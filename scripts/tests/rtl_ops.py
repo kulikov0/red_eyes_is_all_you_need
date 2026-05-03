@@ -845,8 +845,13 @@ def lfsr16_next(state):
 # Top-k via K-register array: init-fill, then strict-greater replace at min slot
 # Min-slot tie: lowest array index among min-value slots
 # Input tie: prob equal to current min does not enter, so earlier idx wins
-def rtl_sample_token(logits_fp16, inv_temp_bits, top_k, lfsr_state, lut0, lut1):
-    scaled = [fp16_mul(x, inv_temp_bits) for x in logits_fp16]
+def rtl_sample_token(logits_fp16, inv_temp_bits, inv_penalty_bits,
+                     seen_set, top_k, lfsr_state, lut0, lut1):
+    inv_temp_pen = fp16_mul(inv_temp_bits, inv_penalty_bits)
+    scaled = []
+    for i, lg in enumerate(logits_fp16):
+        b = inv_temp_pen if i in seen_set else inv_temp_bits
+        scaled.append(fp16_mul(lg, b))
     sm_in = [_q167_to_signed(fp16_to_q167(x)) for x in scaled]
     probs = rtl_softmax(sm_in, lut0, lut1)
     n = len(probs)

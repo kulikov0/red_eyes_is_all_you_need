@@ -17,7 +17,8 @@ LUT1_HEX = os.path.join(PROJ, "mem", "exp_lut1.hex")
 def parse_log(path):
     head = re.compile(r"Test (\d+):")
     line = re.compile(
-        r"TOKEN=(\d+) INV_TEMP=([0-9a-fA-F]+) TOPK=(\d+) SEED=([0-9a-fA-F]+)"
+        r"TOKEN=(\d+) INV_TEMP=([0-9a-fA-F]+) TOPK=(\d+) "
+        r"SEED=([0-9a-fA-F]+) PEN=([0-9a-fA-F]+)"
     )
     tests = {}
     cur = None
@@ -36,6 +37,7 @@ def parse_log(path):
                     "inv_temp": int(m.group(2), 16),
                     "top_k": int(m.group(3)),
                     "seed": int(m.group(4), 16),
+                    "inv_penalty": int(m.group(5), 16),
                 }
                 cur = None
     return tests
@@ -56,7 +58,8 @@ if __name__ == "__main__":
     for ti, t in enumerate(TESTS):
         params = (
             f"name={t['name']} inv_temp={t['inv_temp_bits']:04x} "
-            f"top_k={t['top_k']} seed={t['seed']:04x}"
+            f"top_k={t['top_k']} seed={t['seed']:04x} "
+            f"pen={t['inv_penalty_bits']:04x} seen={sorted(t['seen'])}"
         )
         print(f"Test {ti}: {params}")
         print(f"  {'idx':>4s}  {'xsim':>5s}  {'golden':>6s}  {'delta':>5s}  status")
@@ -69,7 +72,8 @@ if __name__ == "__main__":
 
         xsim_tok = parsed[ti]["token"]
         golden_tok, _ = rtl_sample_token(
-            t["logits"], t["inv_temp_bits"], t["top_k"], t["seed"], lut0, lut1
+            t["logits"], t["inv_temp_bits"], t["inv_penalty_bits"],
+            t["seen"], t["top_k"], t["seed"], lut0, lut1
         )
 
         delta = xsim_tok - golden_tok

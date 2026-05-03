@@ -67,6 +67,7 @@ module transformer_top (
   // Sampler config
   input  wire [15:0] inv_temp_i,
   input  wire [7:0]  top_k_i,
+  input  wire [15:0] inv_penalty_i,
   input  wire        seed_load_i,
   input  wire [15:0] seed_i,
 
@@ -300,12 +301,20 @@ module transformer_top (
   wire [7:0]   samp_token;
   wire         samp_done;
 
+  // keep stops Vivado folding the FF into combinational logic, which would
+  // race ahead of samp_mark_token and mark the wrong bit in seen_mask
+  (* keep = "true" *) reg samp_mark_seen;
+  reg  [7:0]              samp_mark_token;
+
   sampler u_samp (
     .clk_i        (clk_i),
     .rst_i        (rst_i),
     .start_i      (samp_start),
     .inv_temp_i   (inv_temp_i),
     .top_k_i      (top_k_i),
+    .inv_penalty_i(inv_penalty_i),
+    .mark_seen_i  (samp_mark_seen),
+    .mark_token_i (samp_mark_token),
     .seed_load_i  (seed_load_i),
     .seed_i       (seed_i),
     .logit_raddr_o(samp_logit_raddr),
@@ -367,6 +376,8 @@ module transformer_top (
       generating  <= 1'b0;
       pos_r       <= 8'd0;
       layer_idx   <= 2'd0;
+      samp_mark_seen  <= 1'b0;
+      samp_mark_token <= 8'd0;
 
     end else begin
       done_o        <= 1'b0;
@@ -376,12 +387,15 @@ module transformer_top (
       lnf_start     <= 1'b0;
       head_start    <= 1'b0;
       samp_start    <= 1'b0;
+      samp_mark_seen <= 1'b0;
 
       case (state)
 
         S_IDLE: begin
           if (start_i) begin
             cur_token  <= token_i;
+            samp_mark_seen  <= 1'b1;
+            samp_mark_token <= token_i;
             if (generate_i) begin
               generating <= 1'b1;
             end
@@ -470,6 +484,8 @@ module transformer_top (
           end else begin
             // Autoregressive: feed output token back
             cur_token <= samp_token;
+            samp_mark_seen  <= 1'b1;
+            samp_mark_token <= samp_token;
             emb_start <= 1'b1;
             state     <= S_EMBED;
           end

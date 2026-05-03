@@ -9,6 +9,7 @@ Usage:
   python3 uart_inference.py "Hello" 100        # prompt string, 100 tokens
   python3 uart_inference.py --port /dev/cu.usbserial-110 "Hi"
   python3 uart_inference.py --temp 0.8 --top-k 16 --seed 44257 "Hi"
+  python3 uart_inference.py --temp 0.4 --top-k 10 --repeat-penalty 1.3 "Q"
 """
 
 import sys
@@ -58,6 +59,8 @@ def main():
                         help=f"Top-k cutoff; 1 = greedy, 0 = full vocab, max = {SAMPLER_K_MAX}")
     parser.add_argument("--seed", type=int, default=None,
                         help="LFSR seed integer 1..65535; random if omitted")
+    parser.add_argument("--repeat-penalty", type=float, default=None,
+                        help="Repetition penalty (>1 demotes seen tokens); 1.0 = off")
     args = parser.parse_args()
 
     prompt_bytes = [ord(c) for c in args.prompt if ord(c) < 256]
@@ -72,7 +75,7 @@ def main():
             sys.exit(1)
 
     send_cfg = (args.temp is not None or args.top_k is not None
-                or args.seed is not None)
+                or args.seed is not None or args.repeat_penalty is not None)
     if send_cfg:
         temp = args.temp if args.temp is not None else 1.0
         if temp <= 0.0:
@@ -87,17 +90,23 @@ def main():
         if not (1 <= seed <= 0xFFFF):
             print("Error: --seed must be in 1..65535")
             sys.exit(1)
+        penalty = args.repeat_penalty if args.repeat_penalty is not None else 1.0
+        if penalty <= 0.0:
+            print("Error: --repeat-penalty must be positive")
+            sys.exit(1)
+        inv_penalty_bits = fp16_bits(1.0 / penalty)
         cfg_bytes = bytes([
             inv_temp_bits & 0xFF, (inv_temp_bits >> 8) & 0xFF,
             top_k,
             seed & 0xFF, (seed >> 8) & 0xFF,
+            inv_penalty_bits & 0xFF, (inv_penalty_bits >> 8) & 0xFF,
         ])
 
     print(f"Port: {args.port}")
     print(f"Prompt: {repr(args.prompt)} ({len(prompt_bytes)} tokens)")
     print(f"Max generate: {args.max_tokens}")
     if send_cfg:
-        print(f"Config: temp={temp} top_k={top_k} seed={seed}")
+        print(f"Config: temp={temp} top_k={top_k} seed={seed} penalty={penalty}")
     print()
 
     ser = serial.Serial(args.port, args.baud, timeout=30)

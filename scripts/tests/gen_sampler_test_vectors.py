@@ -1,10 +1,12 @@
 """Generate sampler test vectors for tb_sampler
 
 Record layout per test:
-  index 0      inv_temp
-  index 1      top_k in low byte
-  index 2      seed
-  index 3..258 N logits
+  index 0       inv_temp
+  index 1       top_k in low byte
+  index 2       seed
+  index 3       inv_penalty
+  index 4..19   seen_mask, 16 words, little-endian (word k = bits [16k+15:16k])
+  index 20..275 N logits
 """
 
 import os
@@ -18,7 +20,9 @@ PROJ = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 OUT = os.path.join(PROJ, "mem", "sampler_test_vectors.hex")
 
 N = 256
-REC_W = 3 + N
+MASK_W = 16
+HEADER_W = 4 + MASK_W
+REC_W = HEADER_W + N
 
 
 def make_logits(rng, kind):
@@ -38,6 +42,13 @@ def make_logits(rng, kind):
     return [fp16_from_float(v) for v in x]
 
 
+def mask_words_from_set(seen):
+    bits = [0] * MASK_W
+    for tid in seen:
+        bits[tid >> 4] |= 1 << (tid & 0xF)
+    return bits
+
+
 def build_tests():
     rng = random.Random(42)
     return [
@@ -46,6 +57,8 @@ def build_tests():
             "inv_temp_bits": fp16_from_float(1.0),
             "top_k": 1,
             "seed": 0xACE1,
+            "inv_penalty_bits": fp16_from_float(1.0),
+            "seen": set(),
             "logits": make_logits(rng, "peaked"),
         },
         {
@@ -53,6 +66,8 @@ def build_tests():
             "inv_temp_bits": fp16_from_float(1.0),
             "top_k": 4,
             "seed": 0xBEEF,
+            "inv_penalty_bits": fp16_from_float(1.0),
+            "seen": set(),
             "logits": make_logits(rng, "realistic"),
         },
         {
@@ -60,6 +75,8 @@ def build_tests():
             "inv_temp_bits": fp16_from_float(2.0),
             "top_k": 16,
             "seed": 0x1234,
+            "inv_penalty_bits": fp16_from_float(1.0),
+            "seen": set(),
             "logits": make_logits(rng, "two_peak"),
         },
         {
@@ -67,6 +84,8 @@ def build_tests():
             "inv_temp_bits": fp16_from_float(1.0),
             "top_k": 0,
             "seed": 0x5678,
+            "inv_penalty_bits": fp16_from_float(1.0),
+            "seen": set(),
             "logits": make_logits(rng, "realistic"),
         },
         {
@@ -74,7 +93,27 @@ def build_tests():
             "inv_temp_bits": fp16_from_float(0.5),
             "top_k": 1,
             "seed": 0xACE1,
+            "inv_penalty_bits": fp16_from_float(1.0),
+            "seen": set(),
             "logits": make_logits(rng, "peaked"),
+        },
+        {
+            "name": "penalty_demotes_greedy_peak",
+            "inv_temp_bits": fp16_from_float(1.0),
+            "top_k": 1,
+            "seed": 0xACE1,
+            "inv_penalty_bits": fp16_from_float(1.0 / 1.3),
+            "seen": {42},
+            "logits": make_logits(rng, "peaked"),
+        },
+        {
+            "name": "penalty_topk8_realistic",
+            "inv_temp_bits": fp16_from_float(1.0 / 0.7),
+            "top_k": 8,
+            "seed": 0xCAFE,
+            "inv_penalty_bits": fp16_from_float(1.0 / 1.5),
+            "seen": {3, 17, 42, 99, 128, 200, 250},
+            "logits": make_logits(rng, "realistic"),
         },
     ]
 
@@ -88,6 +127,9 @@ def write_hex(path, tests):
             f.write(f"{t['inv_temp_bits']:04x}\n")
             f.write(f"{t['top_k']:04x}\n")
             f.write(f"{t['seed']:04x}\n")
+            f.write(f"{t['inv_penalty_bits']:04x}\n")
+            for w in mask_words_from_set(t["seen"]):
+                f.write(f"{w:04x}\n")
             for v in t["logits"]:
                 f.write(f"{v:04x}\n")
 

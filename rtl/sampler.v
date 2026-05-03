@@ -9,6 +9,9 @@ module sampler #(
   input  wire         start_i,
   input  wire [15:0]  inv_temp_i,
   input  wire [7:0]   top_k_i,
+  input  wire [15:0]  inv_penalty_i,
+  input  wire         mark_seen_i,
+  input  wire [7:0]   mark_token_i,
   input  wire         seed_load_i,
   input  wire [15:0]  seed_i,
   output wire [7:0]   logit_raddr_o,
@@ -22,16 +25,33 @@ module sampler #(
   localparam K_CNT_W = 5;
 
   localparam [3:0] S_IDLE        = 4'd0,
-                   S_TEMP        = 4'd1,
-                   S_TOPK_FETCH  = 4'd2,
-                   S_TOPK_WAIT   = 4'd3,
-                   S_TOPK_UPDATE = 4'd4,
-                   S_FINALIZE    = 4'd5,
-                   S_DRAW        = 4'd6,
-                   S_SCAN        = 4'd7,
-                   S_DONE        = 4'd8;
+                   S_PREP        = 4'd1,
+                   S_TEMP        = 4'd2,
+                   S_TOPK_FETCH  = 4'd3,
+                   S_TOPK_WAIT   = 4'd4,
+                   S_TOPK_UPDATE = 4'd5,
+                   S_FINALIZE    = 4'd6,
+                   S_DRAW        = 4'd7,
+                   S_SCAN        = 4'd8,
+                   S_DONE        = 4'd9;
 
   reg [3:0] state;
+
+  // Repetition penalty: tokens already in the context are demoted by
+  // multiplying their logit by inv_penalty (matching float reference
+  // logit /= penalty). seen_mask is loaded externally via mark_seen_i pulses
+  reg [N-1:0] seen_mask;
+  always @(posedge clk_i) begin
+    if (rst_i || seed_load_i) begin
+      seen_mask <= {N{1'b0}};
+    end else if (mark_seen_i) begin
+      seen_mask[mark_token_i] <= 1'b1;
+    end
+  end
+
+  // Latch config at S_IDLE so per-cycle muxes use stable operands
+  reg [15:0] inv_temp_r;
+  reg [15:0] inv_penalty_r;
 
   reg [K_CNT_W-1:0] k_eff_r;
   reg               full_vocab_r;
@@ -51,9 +71,29 @@ module sampler #(
     end
   end
 
+  // Precompute inv_temp_pen = inv_temp * inv_penalty once per sample call
+  reg         pre_fire;
+  wire [15:0] inv_temp_pen_w;
+  wire        inv_temp_pen_v;
+  fp16_mul u_pre (
+    .clk_i  (clk_i),
+    .valid_i(pre_fire),
+    .a_i    (inv_temp_r),
+    .b_i    (inv_penalty_r),
+    .valid_o(inv_temp_pen_v),
+    .prod_o (inv_temp_pen_w)
+  );
+  reg [15:0] inv_temp_pen_r;
+  always @(posedge clk_i) begin
+    if (inv_temp_pen_v) inv_temp_pen_r <= inv_temp_pen_w;
+  end
+
   reg [ADDR_W:0] feed_cnt;
   wire feed_active = (state == S_TEMP) && (feed_cnt < N);
   assign logit_raddr_o = feed_cnt[ADDR_W-1:0];
+
+  wire token_seen = seen_mask[feed_cnt[ADDR_W-1:0]];
+  wire [15:0] mul_b = token_seen ? inv_temp_pen_r : inv_temp_r;
 
   wire [15:0] scaled_fp16;
   wire        mul_valid_o;
@@ -61,7 +101,7 @@ module sampler #(
     .clk_i  (clk_i),
     .valid_i(feed_active),
     .a_i    (logit_rdata_i),
-    .b_i    (inv_temp_i),
+    .b_i    (mul_b),
     .valid_o(mul_valid_o),
     .prod_o (scaled_fp16)
   );
@@ -208,32 +248,39 @@ module sampler #(
 
   always @(posedge clk_i) begin
     if (rst_i) begin
-      state         <= S_IDLE;
-      done_o        <= 1'b0;
-      sm_start      <= 1'b0;
-      feed_cnt      <= 0;
-      keep_mask     <= {N{1'b0}};
-      n_filled      <= 0;
-      sum_topk      <= 24'd0;
-      fin_cnt       <= 0;
-      fin_full_cnt  <= 0;
-      r_target      <= 24'd0;
-      cum_acc       <= 24'd0;
-      picked        <= 1'b0;
-      last_kept     <= {ADDR_W{1'b0}};
-      token_o       <= 8'd0;
-      k_eff_r       <= K_MAX[K_CNT_W-1:0];
-      full_vocab_r  <= 1'b0;
-      active_mask_r <= {K_MAX{1'b0}};
+      state          <= S_IDLE;
+      done_o         <= 1'b0;
+      sm_start       <= 1'b0;
+      pre_fire       <= 1'b0;
+      feed_cnt       <= 0;
+      keep_mask      <= {N{1'b0}};
+      n_filled       <= 0;
+      sum_topk       <= 24'd0;
+      fin_cnt        <= 0;
+      fin_full_cnt   <= 0;
+      r_target       <= 24'd0;
+      cum_acc        <= 24'd0;
+      picked         <= 1'b0;
+      last_kept      <= {ADDR_W{1'b0}};
+      token_o        <= 8'd0;
+      k_eff_r        <= K_MAX[K_CNT_W-1:0];
+      full_vocab_r   <= 1'b0;
+      active_mask_r  <= {K_MAX{1'b0}};
+      inv_temp_r     <= 16'h3C00;
+      inv_penalty_r  <= 16'h3C00;
     end else begin
       done_o   <= 1'b0;
       sm_start <= 1'b0;
+      pre_fire <= 1'b0;
 
       case (state)
 
         S_IDLE: begin
           if (start_i) begin
-            full_vocab_r <= (top_k_i == 8'd0);
+            inv_temp_r    <= inv_temp_i;
+            inv_penalty_r <= inv_penalty_i;
+            pre_fire      <= 1'b1;
+            full_vocab_r  <= (top_k_i == 8'd0);
             if (top_k_i == 8'd0 || top_k_i > K_MAX[7:0]) begin
               k_eff_r       <= K_MAX[K_CNT_W-1:0];
               active_mask_r <= {K_MAX{1'b1}};
@@ -254,8 +301,16 @@ module sampler #(
             picked       <= 1'b0;
             cum_acc      <= 24'd0;
             last_kept    <= {ADDR_W{1'b0}};
-            sm_start     <= 1'b1;
-            state        <= S_TEMP;
+            state        <= S_PREP;
+          end
+        end
+
+        // Wait for the inv_temp * inv_penalty precompute to land in
+        // inv_temp_pen_r before the per-token feed mux uses it
+        S_PREP: begin
+          if (inv_temp_pen_v) begin
+            sm_start <= 1'b1;
+            state    <= S_TEMP;
           end
         end
 

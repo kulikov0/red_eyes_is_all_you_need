@@ -242,9 +242,14 @@ def ideal_forward_fp16(token_id, position, kv_cache_f,
 
 
 # Float64 sampler. Same LFSR as RTL so the random source is comparable
-def ideal_sample_token(logits_fp16, inv_temp_bits, top_k, lfsr_state):
+def ideal_sample_token(logits_fp16, inv_temp_bits, inv_penalty_bits,
+                       seen_set, top_k, lfsr_state):
     inv_temp = fp16_to_float(inv_temp_bits)
-    scaled = [fp16_to_float(x) * inv_temp for x in logits_fp16]
+    inv_pen = fp16_to_float(inv_penalty_bits)
+    scaled = []
+    for i, lg in enumerate(logits_fp16):
+        m = inv_temp * (inv_pen if i in seen_set else 1.0)
+        scaled.append(fp16_to_float(lg) * m)
     max_x = max(scaled)
     exps = [math.exp(x - max_x) for x in scaled]
     s = sum(exps)
