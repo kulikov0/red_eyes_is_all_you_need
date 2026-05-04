@@ -2,14 +2,11 @@
 RTL-exact inference using pure Python fp16 primitives
 
 Runs autoregressive text generation matching the hardware pipeline
-bit-for-bit: embedding -> 4 transformer layers -> ln_f -> head proj -> argmax
-No xsim, no ideal model - just the RTL golden model from rtl_ops.py
+bit-for-bit: embedding, 4 transformer layers, ln_f, head proj, argmax
+No xsim, no ideal model, just the RTL-exact model from rtl_ops.py
 
 Usage:
-  python3 rtl_inference.py                  # default: token 65 ('A'), 20 tokens
-  python3 rtl_inference.py 72 50            # token 72 ('H'), 50 tokens
-  python3 rtl_inference.py "Hello"          # prompt string, 20 tokens
-  python3 rtl_inference.py "Hello" 50       # prompt string, 50 tokens
+  python3 rtl_inference.py "Q" 255
 """
 
 import sys

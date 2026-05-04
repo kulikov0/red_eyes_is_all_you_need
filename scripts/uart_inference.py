@@ -5,11 +5,7 @@ Sends prompt bytes over UART, then 0xFF to trigger generation
 Receives and prints generated tokens
 
 Usage:
-  python3 uart_inference.py                    # default: "A", 50 tokens
-  python3 uart_inference.py "Hello" 100        # prompt string, 100 tokens
-  python3 uart_inference.py --port /dev/cu.usbserial-110 "Hi"
-  python3 uart_inference.py --temp 0.8 --top-k 16 --seed 44257 "Hi"
-  python3 uart_inference.py --temp 0.4 --top-k 10 --repeat-penalty 1.3 "Q"
+  python3 uart_inference.py "Q" 255 --port /dev/cu.usbserial-110 --temp 0.4 --top-k 10 --repeat-penalty 1.3 --seed 44257
 """
 
 import sys

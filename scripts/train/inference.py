@@ -1,10 +1,8 @@
 """
-Load int8 quantized weights, dequantize, and run inference.
+Load int8 quantized weights, dequantize, and run inference
 
 Usage:
-    python3 scripts/inference.py
-    python3 scripts/inference.py --prompt "VINCENTIO:" --tokens 500
-    python3 scripts/inference.py --weights path/to/weights_int8.bin
+  python3 inference.py --weights weights_int8.bin --prompt "Q" --tokens 255 --temperature 0.4 --top-k 10 --repeat-penalty 1.3 --seed 44257 --device mps
 """
 
 import argparse
