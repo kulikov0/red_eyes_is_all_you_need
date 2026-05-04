@@ -23,9 +23,9 @@ module top (
   output wire [3:0] led_n_o
 );
 
-  // MMCM: 200 MHz LVDS -> 90 MHz
+  // MMCM: 200 MHz LVDS -> 95 MHz
   wire clk_200;
-  wire clk_90;
+  wire clk_95;
   wire mmcm_locked;
 
   IBUFDS ibuf_clk (
@@ -38,7 +38,7 @@ module top (
 
   MMCME2_BASE #(
     .CLKIN1_PERIOD (5.0),
-    .CLKFBOUT_MULT_F (4.5),
+    .CLKFBOUT_MULT_F (4.75),
     .CLKOUT0_DIVIDE_F(10.0)
   ) mmcm_inst (
     .CLKIN1   (clk_200),
@@ -47,7 +47,7 @@ module top (
     .CLKFBOUT (mmcm_fb),
     .CLKFBOUTB(),
     .CLKFBIN  (mmcm_fb),
-    .CLKOUT0  (clk_90),
+    .CLKOUT0  (clk_95),
     .CLKOUT0B (),
     .CLKOUT1  (),
     .CLKOUT1B (),
@@ -61,7 +61,7 @@ module top (
     .LOCKED   (mmcm_locked)
   );
 
-  wire clk = clk_90;
+  wire clk = clk_95;
 
   // Reset synchronizer (active-high internal reset)
   reg [3:0] rst_pipe;
@@ -78,7 +78,7 @@ module top (
   wire [7:0] rx_data;
   wire       rx_valid;
 
-  uart_rx #(.CLK_FREQ(90_000_000), .BAUD(115_200)) u_rx (
+  uart_rx #(.CLK_FREQ(95_000_000), .BAUD(115_200)) u_rx (
     .clk_i  (clk),
     .rst_i  (rst),
     .rx_i   (uart_rx_i),
@@ -91,7 +91,7 @@ module top (
   reg        tx_start;
   wire       tx_busy;
 
-  uart_tx #(.CLK_FREQ(90_000_000), .BAUD(115_200)) u_tx (
+  uart_tx #(.CLK_FREQ(95_000_000), .BAUD(115_200)) u_tx (
     .clk_i  (clk),
     .rst_i  (rst),
     .data_i (tx_data),

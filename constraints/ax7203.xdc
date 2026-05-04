@@ -12,7 +12,7 @@ set_property -dict {PACKAGE_PIN C13 IOSTANDARD LVCMOS33} [get_ports {led_n_o[1]}
 set_property -dict {PACKAGE_PIN D14 IOSTANDARD LVCMOS33} [get_ports {led_n_o[2]}]
 set_property -dict {PACKAGE_PIN D15 IOSTANDARD LVCMOS33} [get_ports {led_n_o[3]}]
 
-create_generated_clock -name clk_90 -source [get_ports sys_clk_p_i] -multiply_by 9 -divide_by 20 [get_pins mmcm_inst/CLKOUT0]
+create_generated_clock -name clk_95 -source [get_ports sys_clk_p_i] -multiply_by 19 -divide_by 40 [get_pins mmcm_inst/CLKOUT0]
 
 # Pblock placement constraints. Each matvec is locked to its own slice/DSP/BRAM
 # band so 16-lane internal routing stays short and fp16_add sticky paths,
@@ -28,9 +28,9 @@ resize_pblock pb_qkv -add {SLICE_X0Y0:SLICE_X41Y149 \
 create_pblock pb_proj
 add_cells_to_pblock pb_proj [get_cells {u_tf/u_tl/u_attn/u_proj u_ws_proj}]
 resize_pblock pb_proj -add {SLICE_X42Y0:SLICE_X69Y149 \
-                            DSP48_X3Y20:DSP48_X3Y79 \
-                            RAMB36_X3Y10:RAMB36_X3Y39 \
-                            RAMB18_X3Y20:RAMB18_X3Y79}
+                            DSP48_X3Y0:DSP48_X3Y99 \
+                            RAMB36_X3Y0:RAMB36_X3Y49 \
+                            RAMB18_X3Y0:RAMB18_X3Y99}
 
 create_pblock pb_ff_up
 add_cells_to_pblock pb_ff_up [get_cells {u_tf/u_tl/u_ff_up u_ws_ff_up}]
