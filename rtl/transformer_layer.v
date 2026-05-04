@@ -52,7 +52,7 @@ module transformer_layer (
   output wire [2:0]    k_head_o,
   output wire [7:0]    k_pos_o,
   output wire [3:0]    k_dim_o,
-  input  wire [31:0]   k_rdata_i,
+  input  wire [63:0]   k_rdata_i,
 
   // V cache (fp16)
   output wire          v_we_o,
@@ -61,7 +61,7 @@ module transformer_layer (
   output wire [2:0]    v_head_o,
   output wire [7:0]    v_pos_o,
   output wire [3:0]    v_dim_o,
-  input  wire [31:0]   v_rdata_i,
+  input  wire [63:0]   v_rdata_i,
 
   output reg           done_o
 );
@@ -89,7 +89,8 @@ module transformer_layer (
   // Shared activation RAM: holds current vector
   reg [15:0] act_ram [0:511];
 
-  // Residual RAM: preserved across LN+attn and LN+FF
+  // Residual RAM: preserved across LN+attn and LN+FF. Save and read states
+  // are disjoint, so the BRAM rw_addr_collision warning is benign
   reg [15:0] res_ram [0:127];
 
   // LN which: 0=LN1, 1=LN2

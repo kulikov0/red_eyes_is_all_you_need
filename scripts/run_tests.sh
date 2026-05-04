@@ -28,7 +28,8 @@ if [ $# -gt 0 ]; then
     tb_files="$tb_files $PROJ/tb/tb_${name}.v"
   done
 else
-  tb_files=$(docker exec "$CONTAINER" bash -c "ls $PROJ/tb/tb_*.v")
+  # tb_profile is debug-only and slow, skip from default sweep
+  tb_files=$(docker exec "$CONTAINER" bash -c "ls $PROJ/tb/tb_*.v | grep -v tb_profile.v")
 fi
 
 echo "Running simulations"

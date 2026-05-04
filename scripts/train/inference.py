@@ -10,6 +10,7 @@ Usage:
 import argparse
 import struct
 import math
+import time
 import numpy as np
 import torch
 import torch.nn as nn
@@ -29,7 +30,12 @@ def main():
     parser.add_argument("--top-k", type=int, default=10, help="Top-k sampling")
     parser.add_argument("--repeat-penalty", type=float, default=1.3, help="Repetition penalty")
     parser.add_argument("--seed", type=int, default=None, help="Torch RNG seed for reproducible sampling")
+    parser.add_argument("--device", choices=["cpu", "mps", "cuda"], default=None,
+                        help="Override device. Default: cfg.device (auto-detected)")
     args = parser.parse_args()
+
+    if args.device is not None:
+        cfg.device = args.device
 
     if args.seed is not None:
         torch.manual_seed(args.seed)
@@ -54,6 +60,7 @@ def main():
         list(args.prompt.encode("utf-8")), dtype=torch.long, device=cfg.device
     ).unsqueeze(0)
 
+    t0 = time.time()
     out = generate_with_penalty(
         model, prompt_t,
         max_new_tokens=args.tokens,
@@ -61,9 +68,11 @@ def main():
         top_k=args.top_k,
         repeat_penalty=args.repeat_penalty,
     )
+    elapsed = time.time() - t0
 
     generated = bytes(out[0][len(prompt_t[0]):].tolist()).decode("utf-8", errors="replace")
     print(args.prompt + generated)
+    print(f"\nGenerated {args.tokens} tokens in {elapsed:.3f}s ({args.tokens / elapsed:.1f} tok/s)")
 
 
 if __name__ == "__main__":

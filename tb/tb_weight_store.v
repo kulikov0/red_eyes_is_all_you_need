@@ -12,7 +12,7 @@ module tb_weight_store;
   weight_store uut (
     .clk_i       (clk),
     .tensor_sel_i(tensor_sel),
-    .addr_i      (addr),
+    .addr_i      (addr[14:0]),
     .data_o      (data),
     .scale_o     (scale)
   );

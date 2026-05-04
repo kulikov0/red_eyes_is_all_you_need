@@ -64,7 +64,7 @@ create_pblock pb_softmax
 add_cells_to_pblock pb_softmax [get_cells {u_tf/u_tl/u_attn/u_sm_a u_tf/u_tl/u_attn/u_sm_b}]
 resize_pblock pb_softmax -add {SLICE_X100Y170:SLICE_X145Y210 \
                                RAMB36_X6Y36:RAMB36_X7Y43 \
-                               RAMB18_X6Y75:RAMB18_X7Y89}
+                               RAMB18_X6Y74:RAMB18_X7Y89}
 
 create_pblock pb_sampler
 add_cells_to_pblock pb_sampler [get_cells u_tf/u_samp]

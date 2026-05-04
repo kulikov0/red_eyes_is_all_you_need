@@ -58,7 +58,8 @@ module layernorm #(
   reg [15:0] var_acc;
   reg [15:0] inv_std;
 
-  // Gamma/beta dequanted to fp16
+  // Gamma/beta dequanted to fp16. Load and read states are disjoint, so
+  // the BRAM rw_addr_collision warning is benign
   reg [15:0] gamma_buf [0:DIM-1];
   reg [15:0] beta_buf  [0:DIM-1];
 
@@ -152,7 +153,7 @@ module layernorm #(
   fp16_rsqrt u_rsqrt (
     .clk_i   (clk_i),
     .valid_i (rsqrt_valid),
-    .val_i   (var_div_out),
+    .val_i   (var_div_out[14:2]),
     .valid_o (rsqrt_done),
     .result_o(rsqrt_result)
   );

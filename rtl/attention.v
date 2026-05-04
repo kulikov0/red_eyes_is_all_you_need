@@ -35,15 +35,15 @@ module attention (
   input  wire [15:0]   proj_scale_i,
 
   // K cache addr is separate from V so score and AV can run in parallel.
-  // KV cache packs 2 consecutive positions per 32-bit word; rdata returns
-  // {odd_pos, even_pos} and the consumer half-selects via pos[0]
+  // KV cache packs 4 consecutive positions per 64-bit word; rdata returns
+  // {pos%4=3, pos%4=2, pos%4=1, pos%4=0} and the consumer fans out per quad
   output reg           k_we_o,
   output reg  [15:0]   k_wdata_o,
   output reg  [1:0]    k_layer_o,
   output reg  [2:0]    k_head_o,
   output reg  [7:0]    k_pos_o,
   output reg  [3:0]    k_dim_o,
-  input  wire [31:0]   k_rdata_i,
+  input  wire [63:0]   k_rdata_i,
 
   output reg           v_we_o,
   output reg  [15:0]   v_wdata_o,
@@ -51,7 +51,7 @@ module attention (
   output reg  [2:0]    v_head_o,
   output reg  [7:0]    v_pos_o,
   output reg  [3:0]    v_dim_o,
-  input  wire [31:0]   v_rdata_i,
+  input  wire [63:0]   v_rdata_i,
 
   output reg           done_o
 );
@@ -242,8 +242,9 @@ module attention (
   reg [4:0]  av_cnt;
   reg [7:0]  av_pos;
   reg [2:0]  av_bram_v;
-  reg [3:0]  av_dim_pipe [0:12];
+  reg [3:0]  av_dim_pipe [0:16];
   reg        av_issue_done;
+  reg [4:0]  av_drain_cnt;
 
   reg [8:0] pad_cnt;
 
@@ -263,167 +264,239 @@ module attention (
   wire [15:0] kv_fp16_v = qkv_ram[256 + kv_idx];
 
   // Score Q*K mul, products feed the reducers below.
-  // Each cycle reads 2 K values (lower=pos 2*pp, upper=pos 2*pp+1) from the
-  // 32-bit packed kv_cache and feeds two fp16_mul instances in parallel
+  // Each cycle reads 4 K values from the 64-bit packed kv_cache and feeds
+  // four fp16_mul instances in parallel for one quad of positions
   wire sc_issue = (score_state == SC_SCORE) && (sc_cnt < 5'd16);
 
   // Register k_rdata before the score multipliers to break the K cache BRAM
-  // clk-to-out -> DSP B chain
-  reg [31:0] sc_k_rdata_r;
+  // clk-to-out to DSP B chain
+  reg [63:0] sc_k_rdata_r;
   always @(posedge clk_i) sc_k_rdata_r <= k_rdata_i;
 
-  // Pair partial flag pipelined to align with mul valid_i. Set when the
-  // current pair's upper position is past pos_r (only when pos_r is even)
-  reg sc_partial_pair;
-  always @(*) sc_partial_pair = (sc_pos == pos_r) && !pos_r[0];
-
-  // sc_partial_pipe tracks sc_partial_pair through the 4-stage bram_v pipeline
-  // so the mul valid for upper half can be gated when the upper pos is invalid
-  reg [3:0] sc_partial_pipe;
-  always @(posedge clk_i) begin
-    if (rst_i) sc_partial_pipe <= 4'b0000;
-    else       sc_partial_pipe <= {sc_partial_pipe[2:0], sc_partial_pair && sc_issue};
+  // Per-lane partial flags: when scoring the last quad and pos_r[1:0] < N,
+  // lane qN is invalid and its mul valid must be gated.
+  reg sc_partial_q1, sc_partial_q2, sc_partial_q3;
+  always @(*) begin
+    sc_partial_q1 = (sc_pos[7:2] == pos_r[7:2]) && (pos_r[1:0] < 2'd1);
+    sc_partial_q2 = (sc_pos[7:2] == pos_r[7:2]) && (pos_r[1:0] < 2'd2);
+    sc_partial_q3 = (sc_pos[7:2] == pos_r[7:2]) && (pos_r[1:0] < 2'd3);
   end
 
-  wire        sc_mul_a_v_out, sc_mul_b_v_out;
-  wire [15:0] sc_mac_prod_a, sc_mac_prod_b;
-  fp16_mul u_sc_mul_a (
+  reg [3:0] sc_partial_q1_pipe, sc_partial_q2_pipe, sc_partial_q3_pipe;
+  always @(posedge clk_i) begin
+    if (rst_i) begin
+      sc_partial_q1_pipe <= 4'b0000;
+      sc_partial_q2_pipe <= 4'b0000;
+      sc_partial_q3_pipe <= 4'b0000;
+    end else begin
+      sc_partial_q1_pipe <= {sc_partial_q1_pipe[2:0], sc_partial_q1 && sc_issue};
+      sc_partial_q2_pipe <= {sc_partial_q2_pipe[2:0], sc_partial_q2 && sc_issue};
+      sc_partial_q3_pipe <= {sc_partial_q3_pipe[2:0], sc_partial_q3 && sc_issue};
+    end
+  end
+
+  wire        sc_mul_q0_v_out, sc_mul_q1_v_out, sc_mul_q2_v_out, sc_mul_q3_v_out;
+  wire [15:0] sc_mac_prod_q0, sc_mac_prod_q1, sc_mac_prod_q2, sc_mac_prod_q3;
+  fp16_mul u_sc_mul_q0 (
     .clk_i  (clk_i),
     .valid_i(sc_bram_v[3]),
     .a_i    (q_head[sc_dim_pipe[3]]),
     .b_i    (sc_k_rdata_r[15:0]),
-    .valid_o(sc_mul_a_v_out),
-    .prod_o (sc_mac_prod_a)
+    .valid_o(sc_mul_q0_v_out),
+    .prod_o (sc_mac_prod_q0)
   );
-
-  fp16_mul u_sc_mul_b (
+  fp16_mul u_sc_mul_q1 (
     .clk_i  (clk_i),
-    .valid_i(sc_bram_v[3] && !sc_partial_pipe[3]),
+    .valid_i(sc_bram_v[3] && !sc_partial_q1_pipe[3]),
     .a_i    (q_head[sc_dim_pipe[3]]),
     .b_i    (sc_k_rdata_r[31:16]),
-    .valid_o(sc_mul_b_v_out),
-    .prod_o (sc_mac_prod_b)
+    .valid_o(sc_mul_q1_v_out),
+    .prod_o (sc_mac_prod_q1)
+  );
+  fp16_mul u_sc_mul_q2 (
+    .clk_i  (clk_i),
+    .valid_i(sc_bram_v[3] && !sc_partial_q2_pipe[3]),
+    .a_i    (q_head[sc_dim_pipe[3]]),
+    .b_i    (sc_k_rdata_r[47:32]),
+    .valid_o(sc_mul_q2_v_out),
+    .prod_o (sc_mac_prod_q2)
+  );
+  fp16_mul u_sc_mul_q3 (
+    .clk_i  (clk_i),
+    .valid_i(sc_bram_v[3] && !sc_partial_q3_pipe[3]),
+    .a_i    (q_head[sc_dim_pipe[3]]),
+    .b_i    (sc_k_rdata_r[63:48]),
+    .valid_o(sc_mul_q3_v_out),
+    .prod_o (sc_mac_prod_q3)
   );
 
-  // Eight reducers in 4-way ping-pong: red_a/b/c/d each handle every 4th
-  // score pair, lo/hi per pair for the K cache packed word halves.
-  // red_issue_sel cycles 0..3 across pairs, mul_pos_sel is its pipelined
+  // 16 reducers in 4-way ping-pong: red_a/b/c/d each handle every 4th
+  // quad, with 4 lanes per slot for the K cache packed word quarters.
+  // red_issue_sel cycles 0..3 across quads, mul_pos_sel is its pipelined
   // form that routes mul outputs to the matching reducer set
   reg [1:0] red_issue_sel;
-  reg [2:0] red_cap_sel;
+  reg [3:0] red_cap_sel;
   reg [1:0] mul_pos_sel;
 
-  wire sc_clear_pulse  = (score_state == SC_SCORE) && (sc_cnt < 5'd5);
-  wire sc_clear_a_pair = sc_clear_pulse && (red_issue_sel == 2'd0);
-  wire sc_clear_b_pair = sc_clear_pulse && (red_issue_sel == 2'd1);
-  wire sc_clear_c_pair = sc_clear_pulse && (red_issue_sel == 2'd2);
-  wire sc_clear_d_pair = sc_clear_pulse && (red_issue_sel == 2'd3);
-  wire sc_clear_a_lo   = sc_clear_a_pair;
-  wire sc_clear_a_hi   = sc_clear_a_pair && !sc_partial_pair;
-  wire sc_clear_b_lo   = sc_clear_b_pair;
-  wire sc_clear_b_hi   = sc_clear_b_pair && !sc_partial_pair;
-  wire sc_clear_c_lo   = sc_clear_c_pair;
-  wire sc_clear_c_hi   = sc_clear_c_pair && !sc_partial_pair;
-  wire sc_clear_d_lo   = sc_clear_d_pair;
-  wire sc_clear_d_hi   = sc_clear_d_pair && !sc_partial_pair;
+  wire sc_clear_pulse = (score_state == SC_SCORE) && (sc_cnt < 5'd5);
+  wire sc_clear_a     = sc_clear_pulse && (red_issue_sel == 2'd0);
+  wire sc_clear_b     = sc_clear_pulse && (red_issue_sel == 2'd1);
+  wire sc_clear_c     = sc_clear_pulse && (red_issue_sel == 2'd2);
+  wire sc_clear_d     = sc_clear_pulse && (red_issue_sel == 2'd3);
+  wire sc_clear_a_q0 = sc_clear_a;
+  wire sc_clear_a_q1 = sc_clear_a && !sc_partial_q1;
+  wire sc_clear_a_q2 = sc_clear_a && !sc_partial_q2;
+  wire sc_clear_a_q3 = sc_clear_a && !sc_partial_q3;
+  wire sc_clear_b_q0 = sc_clear_b;
+  wire sc_clear_b_q1 = sc_clear_b && !sc_partial_q1;
+  wire sc_clear_b_q2 = sc_clear_b && !sc_partial_q2;
+  wire sc_clear_b_q3 = sc_clear_b && !sc_partial_q3;
+  wire sc_clear_c_q0 = sc_clear_c;
+  wire sc_clear_c_q1 = sc_clear_c && !sc_partial_q1;
+  wire sc_clear_c_q2 = sc_clear_c && !sc_partial_q2;
+  wire sc_clear_c_q3 = sc_clear_c && !sc_partial_q3;
+  wire sc_clear_d_q0 = sc_clear_d;
+  wire sc_clear_d_q1 = sc_clear_d && !sc_partial_q1;
+  wire sc_clear_d_q2 = sc_clear_d && !sc_partial_q2;
+  wire sc_clear_d_q3 = sc_clear_d && !sc_partial_q3;
 
-  wire sc_red_a_lo_valid_i = sc_mul_a_v_out && (mul_pos_sel == 2'd0);
-  wire sc_red_a_hi_valid_i = sc_mul_b_v_out && (mul_pos_sel == 2'd0);
-  wire sc_red_b_lo_valid_i = sc_mul_a_v_out && (mul_pos_sel == 2'd1);
-  wire sc_red_b_hi_valid_i = sc_mul_b_v_out && (mul_pos_sel == 2'd1);
-  wire sc_red_c_lo_valid_i = sc_mul_a_v_out && (mul_pos_sel == 2'd2);
-  wire sc_red_c_hi_valid_i = sc_mul_b_v_out && (mul_pos_sel == 2'd2);
-  wire sc_red_d_lo_valid_i = sc_mul_a_v_out && (mul_pos_sel == 2'd3);
-  wire sc_red_d_hi_valid_i = sc_mul_b_v_out && (mul_pos_sel == 2'd3);
+  wire sc_red_a_q0_valid_i = sc_mul_q0_v_out && (mul_pos_sel == 2'd0);
+  wire sc_red_a_q1_valid_i = sc_mul_q1_v_out && (mul_pos_sel == 2'd0);
+  wire sc_red_a_q2_valid_i = sc_mul_q2_v_out && (mul_pos_sel == 2'd0);
+  wire sc_red_a_q3_valid_i = sc_mul_q3_v_out && (mul_pos_sel == 2'd0);
+  wire sc_red_b_q0_valid_i = sc_mul_q0_v_out && (mul_pos_sel == 2'd1);
+  wire sc_red_b_q1_valid_i = sc_mul_q1_v_out && (mul_pos_sel == 2'd1);
+  wire sc_red_b_q2_valid_i = sc_mul_q2_v_out && (mul_pos_sel == 2'd1);
+  wire sc_red_b_q3_valid_i = sc_mul_q3_v_out && (mul_pos_sel == 2'd1);
+  wire sc_red_c_q0_valid_i = sc_mul_q0_v_out && (mul_pos_sel == 2'd2);
+  wire sc_red_c_q1_valid_i = sc_mul_q1_v_out && (mul_pos_sel == 2'd2);
+  wire sc_red_c_q2_valid_i = sc_mul_q2_v_out && (mul_pos_sel == 2'd2);
+  wire sc_red_c_q3_valid_i = sc_mul_q3_v_out && (mul_pos_sel == 2'd2);
+  wire sc_red_d_q0_valid_i = sc_mul_q0_v_out && (mul_pos_sel == 2'd3);
+  wire sc_red_d_q1_valid_i = sc_mul_q1_v_out && (mul_pos_sel == 2'd3);
+  wire sc_red_d_q2_valid_i = sc_mul_q2_v_out && (mul_pos_sel == 2'd3);
+  wire sc_red_d_q3_valid_i = sc_mul_q3_v_out && (mul_pos_sel == 2'd3);
 
-  wire sc_red_a_lo_flush_i = sc_red_a_lo_valid_i && (sc_red_in_cnt == 5'd15);
-  wire sc_red_a_hi_flush_i = sc_red_a_hi_valid_i && (sc_red_in_cnt == 5'd15);
-  wire sc_red_b_lo_flush_i = sc_red_b_lo_valid_i && (sc_red_in_cnt == 5'd15);
-  wire sc_red_b_hi_flush_i = sc_red_b_hi_valid_i && (sc_red_in_cnt == 5'd15);
-  wire sc_red_c_lo_flush_i = sc_red_c_lo_valid_i && (sc_red_in_cnt == 5'd15);
-  wire sc_red_c_hi_flush_i = sc_red_c_hi_valid_i && (sc_red_in_cnt == 5'd15);
-  wire sc_red_d_lo_flush_i = sc_red_d_lo_valid_i && (sc_red_in_cnt == 5'd15);
-  wire sc_red_d_hi_flush_i = sc_red_d_hi_valid_i && (sc_red_in_cnt == 5'd15);
+  wire sc_red_a_q0_flush_i = sc_red_a_q0_valid_i && (sc_red_in_cnt == 5'd15);
+  wire sc_red_a_q1_flush_i = sc_red_a_q1_valid_i && (sc_red_in_cnt == 5'd15);
+  wire sc_red_a_q2_flush_i = sc_red_a_q2_valid_i && (sc_red_in_cnt == 5'd15);
+  wire sc_red_a_q3_flush_i = sc_red_a_q3_valid_i && (sc_red_in_cnt == 5'd15);
+  wire sc_red_b_q0_flush_i = sc_red_b_q0_valid_i && (sc_red_in_cnt == 5'd15);
+  wire sc_red_b_q1_flush_i = sc_red_b_q1_valid_i && (sc_red_in_cnt == 5'd15);
+  wire sc_red_b_q2_flush_i = sc_red_b_q2_valid_i && (sc_red_in_cnt == 5'd15);
+  wire sc_red_b_q3_flush_i = sc_red_b_q3_valid_i && (sc_red_in_cnt == 5'd15);
+  wire sc_red_c_q0_flush_i = sc_red_c_q0_valid_i && (sc_red_in_cnt == 5'd15);
+  wire sc_red_c_q1_flush_i = sc_red_c_q1_valid_i && (sc_red_in_cnt == 5'd15);
+  wire sc_red_c_q2_flush_i = sc_red_c_q2_valid_i && (sc_red_in_cnt == 5'd15);
+  wire sc_red_c_q3_flush_i = sc_red_c_q3_valid_i && (sc_red_in_cnt == 5'd15);
+  wire sc_red_d_q0_flush_i = sc_red_d_q0_valid_i && (sc_red_in_cnt == 5'd15);
+  wire sc_red_d_q1_flush_i = sc_red_d_q1_valid_i && (sc_red_in_cnt == 5'd15);
+  wire sc_red_d_q2_flush_i = sc_red_d_q2_valid_i && (sc_red_in_cnt == 5'd15);
+  wire sc_red_d_q3_flush_i = sc_red_d_q3_valid_i && (sc_red_in_cnt == 5'd15);
 
-  wire        sc_red_a_lo_done, sc_red_a_hi_done;
-  wire        sc_red_b_lo_done, sc_red_b_hi_done;
-  wire        sc_red_c_lo_done, sc_red_c_hi_done;
-  wire        sc_red_d_lo_done, sc_red_d_hi_done;
-  wire [15:0] sc_red_a_lo_sum,  sc_red_a_hi_sum;
-  wire [15:0] sc_red_b_lo_sum,  sc_red_b_hi_sum;
-  wire [15:0] sc_red_c_lo_sum,  sc_red_c_hi_sum;
-  wire [15:0] sc_red_d_lo_sum,  sc_red_d_hi_sum;
+  wire        sc_red_a_q0_done, sc_red_a_q1_done, sc_red_a_q2_done, sc_red_a_q3_done;
+  wire        sc_red_b_q0_done, sc_red_b_q1_done, sc_red_b_q2_done, sc_red_b_q3_done;
+  wire        sc_red_c_q0_done, sc_red_c_q1_done, sc_red_c_q2_done, sc_red_c_q3_done;
+  wire        sc_red_d_q0_done, sc_red_d_q1_done, sc_red_d_q2_done, sc_red_d_q3_done;
+  wire [15:0] sc_red_a_q0_sum,  sc_red_a_q1_sum,  sc_red_a_q2_sum,  sc_red_a_q3_sum;
+  wire [15:0] sc_red_b_q0_sum,  sc_red_b_q1_sum,  sc_red_b_q2_sum,  sc_red_b_q3_sum;
+  wire [15:0] sc_red_c_q0_sum,  sc_red_c_q1_sum,  sc_red_c_q2_sum,  sc_red_c_q3_sum;
+  wire [15:0] sc_red_d_q0_sum,  sc_red_d_q1_sum,  sc_red_d_q2_sum,  sc_red_d_q3_sum;
 
-  fp16_reduce_k8 u_sc_red_a_lo (
-    .clk_i(clk_i), .rst_i(rst_i),
-    .clear_i(sc_clear_a_lo), .valid_i(sc_red_a_lo_valid_i),
-    .data_i (sc_mac_prod_a), .flush_i(sc_red_a_lo_flush_i),
-    .done_o (sc_red_a_lo_done), .sum_o(sc_red_a_lo_sum)
-  );
-  fp16_reduce_k8 u_sc_red_a_hi (
-    .clk_i(clk_i), .rst_i(rst_i),
-    .clear_i(sc_clear_a_hi), .valid_i(sc_red_a_hi_valid_i),
-    .data_i (sc_mac_prod_b), .flush_i(sc_red_a_hi_flush_i),
-    .done_o (sc_red_a_hi_done), .sum_o(sc_red_a_hi_sum)
-  );
-  fp16_reduce_k8 u_sc_red_b_lo (
-    .clk_i(clk_i), .rst_i(rst_i),
-    .clear_i(sc_clear_b_lo), .valid_i(sc_red_b_lo_valid_i),
-    .data_i (sc_mac_prod_a), .flush_i(sc_red_b_lo_flush_i),
-    .done_o (sc_red_b_lo_done), .sum_o(sc_red_b_lo_sum)
-  );
-  fp16_reduce_k8 u_sc_red_b_hi (
-    .clk_i(clk_i), .rst_i(rst_i),
-    .clear_i(sc_clear_b_hi), .valid_i(sc_red_b_hi_valid_i),
-    .data_i (sc_mac_prod_b), .flush_i(sc_red_b_hi_flush_i),
-    .done_o (sc_red_b_hi_done), .sum_o(sc_red_b_hi_sum)
-  );
-  fp16_reduce_k8 u_sc_red_c_lo (
-    .clk_i(clk_i), .rst_i(rst_i),
-    .clear_i(sc_clear_c_lo), .valid_i(sc_red_c_lo_valid_i),
-    .data_i (sc_mac_prod_a), .flush_i(sc_red_c_lo_flush_i),
-    .done_o (sc_red_c_lo_done), .sum_o(sc_red_c_lo_sum)
-  );
-  fp16_reduce_k8 u_sc_red_c_hi (
-    .clk_i(clk_i), .rst_i(rst_i),
-    .clear_i(sc_clear_c_hi), .valid_i(sc_red_c_hi_valid_i),
-    .data_i (sc_mac_prod_b), .flush_i(sc_red_c_hi_flush_i),
-    .done_o (sc_red_c_hi_done), .sum_o(sc_red_c_hi_sum)
-  );
-  fp16_reduce_k8 u_sc_red_d_lo (
-    .clk_i(clk_i), .rst_i(rst_i),
-    .clear_i(sc_clear_d_lo), .valid_i(sc_red_d_lo_valid_i),
-    .data_i (sc_mac_prod_a), .flush_i(sc_red_d_lo_flush_i),
-    .done_o (sc_red_d_lo_done), .sum_o(sc_red_d_lo_sum)
-  );
-  fp16_reduce_k8 u_sc_red_d_hi (
-    .clk_i(clk_i), .rst_i(rst_i),
-    .clear_i(sc_clear_d_hi), .valid_i(sc_red_d_hi_valid_i),
-    .data_i (sc_mac_prod_b), .flush_i(sc_red_d_hi_flush_i),
-    .done_o (sc_red_d_hi_done), .sum_o(sc_red_d_hi_sum)
-  );
+  fp16_reduce_k8 u_sc_red_a_q0 (.clk_i(clk_i), .rst_i(rst_i),
+    .clear_i(sc_clear_a_q0), .valid_i(sc_red_a_q0_valid_i),
+    .data_i (sc_mac_prod_q0), .flush_i(sc_red_a_q0_flush_i),
+    .done_o (sc_red_a_q0_done), .sum_o(sc_red_a_q0_sum));
+  fp16_reduce_k8 u_sc_red_a_q1 (.clk_i(clk_i), .rst_i(rst_i),
+    .clear_i(sc_clear_a_q1), .valid_i(sc_red_a_q1_valid_i),
+    .data_i (sc_mac_prod_q1), .flush_i(sc_red_a_q1_flush_i),
+    .done_o (sc_red_a_q1_done), .sum_o(sc_red_a_q1_sum));
+  fp16_reduce_k8 u_sc_red_a_q2 (.clk_i(clk_i), .rst_i(rst_i),
+    .clear_i(sc_clear_a_q2), .valid_i(sc_red_a_q2_valid_i),
+    .data_i (sc_mac_prod_q2), .flush_i(sc_red_a_q2_flush_i),
+    .done_o (sc_red_a_q2_done), .sum_o(sc_red_a_q2_sum));
+  fp16_reduce_k8 u_sc_red_a_q3 (.clk_i(clk_i), .rst_i(rst_i),
+    .clear_i(sc_clear_a_q3), .valid_i(sc_red_a_q3_valid_i),
+    .data_i (sc_mac_prod_q3), .flush_i(sc_red_a_q3_flush_i),
+    .done_o (sc_red_a_q3_done), .sum_o(sc_red_a_q3_sum));
+  fp16_reduce_k8 u_sc_red_b_q0 (.clk_i(clk_i), .rst_i(rst_i),
+    .clear_i(sc_clear_b_q0), .valid_i(sc_red_b_q0_valid_i),
+    .data_i (sc_mac_prod_q0), .flush_i(sc_red_b_q0_flush_i),
+    .done_o (sc_red_b_q0_done), .sum_o(sc_red_b_q0_sum));
+  fp16_reduce_k8 u_sc_red_b_q1 (.clk_i(clk_i), .rst_i(rst_i),
+    .clear_i(sc_clear_b_q1), .valid_i(sc_red_b_q1_valid_i),
+    .data_i (sc_mac_prod_q1), .flush_i(sc_red_b_q1_flush_i),
+    .done_o (sc_red_b_q1_done), .sum_o(sc_red_b_q1_sum));
+  fp16_reduce_k8 u_sc_red_b_q2 (.clk_i(clk_i), .rst_i(rst_i),
+    .clear_i(sc_clear_b_q2), .valid_i(sc_red_b_q2_valid_i),
+    .data_i (sc_mac_prod_q2), .flush_i(sc_red_b_q2_flush_i),
+    .done_o (sc_red_b_q2_done), .sum_o(sc_red_b_q2_sum));
+  fp16_reduce_k8 u_sc_red_b_q3 (.clk_i(clk_i), .rst_i(rst_i),
+    .clear_i(sc_clear_b_q3), .valid_i(sc_red_b_q3_valid_i),
+    .data_i (sc_mac_prod_q3), .flush_i(sc_red_b_q3_flush_i),
+    .done_o (sc_red_b_q3_done), .sum_o(sc_red_b_q3_sum));
+  fp16_reduce_k8 u_sc_red_c_q0 (.clk_i(clk_i), .rst_i(rst_i),
+    .clear_i(sc_clear_c_q0), .valid_i(sc_red_c_q0_valid_i),
+    .data_i (sc_mac_prod_q0), .flush_i(sc_red_c_q0_flush_i),
+    .done_o (sc_red_c_q0_done), .sum_o(sc_red_c_q0_sum));
+  fp16_reduce_k8 u_sc_red_c_q1 (.clk_i(clk_i), .rst_i(rst_i),
+    .clear_i(sc_clear_c_q1), .valid_i(sc_red_c_q1_valid_i),
+    .data_i (sc_mac_prod_q1), .flush_i(sc_red_c_q1_flush_i),
+    .done_o (sc_red_c_q1_done), .sum_o(sc_red_c_q1_sum));
+  fp16_reduce_k8 u_sc_red_c_q2 (.clk_i(clk_i), .rst_i(rst_i),
+    .clear_i(sc_clear_c_q2), .valid_i(sc_red_c_q2_valid_i),
+    .data_i (sc_mac_prod_q2), .flush_i(sc_red_c_q2_flush_i),
+    .done_o (sc_red_c_q2_done), .sum_o(sc_red_c_q2_sum));
+  fp16_reduce_k8 u_sc_red_c_q3 (.clk_i(clk_i), .rst_i(rst_i),
+    .clear_i(sc_clear_c_q3), .valid_i(sc_red_c_q3_valid_i),
+    .data_i (sc_mac_prod_q3), .flush_i(sc_red_c_q3_flush_i),
+    .done_o (sc_red_c_q3_done), .sum_o(sc_red_c_q3_sum));
+  fp16_reduce_k8 u_sc_red_d_q0 (.clk_i(clk_i), .rst_i(rst_i),
+    .clear_i(sc_clear_d_q0), .valid_i(sc_red_d_q0_valid_i),
+    .data_i (sc_mac_prod_q0), .flush_i(sc_red_d_q0_flush_i),
+    .done_o (sc_red_d_q0_done), .sum_o(sc_red_d_q0_sum));
+  fp16_reduce_k8 u_sc_red_d_q1 (.clk_i(clk_i), .rst_i(rst_i),
+    .clear_i(sc_clear_d_q1), .valid_i(sc_red_d_q1_valid_i),
+    .data_i (sc_mac_prod_q1), .flush_i(sc_red_d_q1_flush_i),
+    .done_o (sc_red_d_q1_done), .sum_o(sc_red_d_q1_sum));
+  fp16_reduce_k8 u_sc_red_d_q2 (.clk_i(clk_i), .rst_i(rst_i),
+    .clear_i(sc_clear_d_q2), .valid_i(sc_red_d_q2_valid_i),
+    .data_i (sc_mac_prod_q2), .flush_i(sc_red_d_q2_flush_i),
+    .done_o (sc_red_d_q2_done), .sum_o(sc_red_d_q2_sum));
+  fp16_reduce_k8 u_sc_red_d_q3 (.clk_i(clk_i), .rst_i(rst_i),
+    .clear_i(sc_clear_d_q3), .valid_i(sc_red_d_q3_valid_i),
+    .data_i (sc_mac_prod_q3), .flush_i(sc_red_d_q3_flush_i),
+    .done_o (sc_red_d_q3_done), .sum_o(sc_red_d_q3_sum));
 
-  // Pend latches: lo and hi of the same pair pulse done_o on the same cycle,
-  // so the serial cap_state cannot catch both. Set on done, clear when
-  // cap_state captures that reducer. red_cap_sel walks 0..7 through a_lo,
-  // a_hi, b_lo, b_hi, c_lo, c_hi, d_lo, d_hi in pos order
-  reg sc_red_a_lo_pend, sc_red_a_hi_pend;
-  reg sc_red_b_lo_pend, sc_red_b_hi_pend;
-  reg sc_red_c_lo_pend, sc_red_c_hi_pend;
-  reg sc_red_d_lo_pend, sc_red_d_hi_pend;
+  // Pend latches: all four lanes of the same quad pulse done_o on the same
+  // cycle, so the serial cap_state cannot catch them all at once. Set on
+  // done, clear when cap_state captures that reducer. red_cap_sel walks
+  // 0..15 through {a,b,c,d} x {q0,q1,q2,q3} in pos order
+  reg sc_red_a_q0_pend, sc_red_a_q1_pend, sc_red_a_q2_pend, sc_red_a_q3_pend;
+  reg sc_red_b_q0_pend, sc_red_b_q1_pend, sc_red_b_q2_pend, sc_red_b_q3_pend;
+  reg sc_red_c_q0_pend, sc_red_c_q1_pend, sc_red_c_q2_pend, sc_red_c_q3_pend;
+  reg sc_red_d_q0_pend, sc_red_d_q1_pend, sc_red_d_q2_pend, sc_red_d_q3_pend;
 
   reg        sc_red_done;
   reg [15:0] sc_red_sum;
   always @(*) begin
     case (red_cap_sel)
-      3'd0: begin sc_red_done = sc_red_a_lo_pend; sc_red_sum = sc_red_a_lo_sum; end
-      3'd1: begin sc_red_done = sc_red_a_hi_pend; sc_red_sum = sc_red_a_hi_sum; end
-      3'd2: begin sc_red_done = sc_red_b_lo_pend; sc_red_sum = sc_red_b_lo_sum; end
-      3'd3: begin sc_red_done = sc_red_b_hi_pend; sc_red_sum = sc_red_b_hi_sum; end
-      3'd4: begin sc_red_done = sc_red_c_lo_pend; sc_red_sum = sc_red_c_lo_sum; end
-      3'd5: begin sc_red_done = sc_red_c_hi_pend; sc_red_sum = sc_red_c_hi_sum; end
-      3'd6: begin sc_red_done = sc_red_d_lo_pend; sc_red_sum = sc_red_d_lo_sum; end
-      3'd7: begin sc_red_done = sc_red_d_hi_pend; sc_red_sum = sc_red_d_hi_sum; end
+      4'd0:  begin sc_red_done = sc_red_a_q0_pend; sc_red_sum = sc_red_a_q0_sum; end
+      4'd1:  begin sc_red_done = sc_red_a_q1_pend; sc_red_sum = sc_red_a_q1_sum; end
+      4'd2:  begin sc_red_done = sc_red_a_q2_pend; sc_red_sum = sc_red_a_q2_sum; end
+      4'd3:  begin sc_red_done = sc_red_a_q3_pend; sc_red_sum = sc_red_a_q3_sum; end
+      4'd4:  begin sc_red_done = sc_red_b_q0_pend; sc_red_sum = sc_red_b_q0_sum; end
+      4'd5:  begin sc_red_done = sc_red_b_q1_pend; sc_red_sum = sc_red_b_q1_sum; end
+      4'd6:  begin sc_red_done = sc_red_b_q2_pend; sc_red_sum = sc_red_b_q2_sum; end
+      4'd7:  begin sc_red_done = sc_red_b_q3_pend; sc_red_sum = sc_red_b_q3_sum; end
+      4'd8:  begin sc_red_done = sc_red_c_q0_pend; sc_red_sum = sc_red_c_q0_sum; end
+      4'd9:  begin sc_red_done = sc_red_c_q1_pend; sc_red_sum = sc_red_c_q1_sum; end
+      4'd10: begin sc_red_done = sc_red_c_q2_pend; sc_red_sum = sc_red_c_q2_sum; end
+      4'd11: begin sc_red_done = sc_red_c_q3_pend; sc_red_sum = sc_red_c_q3_sum; end
+      4'd12: begin sc_red_done = sc_red_d_q0_pend; sc_red_sum = sc_red_d_q0_sum; end
+      4'd13: begin sc_red_done = sc_red_d_q1_pend; sc_red_sum = sc_red_d_q1_sum; end
+      4'd14: begin sc_red_done = sc_red_d_q2_pend; sc_red_sum = sc_red_d_q2_sum; end
+      4'd15: begin sc_red_done = sc_red_d_q3_pend; sc_red_sum = sc_red_d_q3_sum; end
     endcase
   end
 
@@ -448,82 +521,95 @@ module attention (
     .q167_o(sc_q167)
   );
 
-  // AV: Q1.15 -> fp16 for both attn_buf entries of the current pair, then
-  // (attn_a*V_lo + attn_b*V_hi) summed via fp16_add, accumulated into av_acc[d].
-  // For partial pair (pos_r even, last pair) attn_b is forced to 0 so the
-  // upper position contributes nothing
+  // AV: Q1.15 -> fp16 for all four attn_buf entries of the current quad, then
+  // sum (attn_qN * V_qN) for N=0..3 via a balanced fp16_add tree, accumulated
+  // into av_acc[d]. Partial-quad masking forces unused lanes to zero.
   reg [7:0]  av_pos_r1;
-  reg        av_partial_r1;
-  reg [15:0] attn_val_a_r, attn_val_b_r;
-  wire av_partial = (av_pos == pos_r) && !pos_r[0];
+  reg [1:0]  av_partial_r1;
+  reg [15:0] attn_val_q0_r, attn_val_q1_r, attn_val_q2_r, attn_val_q3_r;
+  reg [1:0]  av_partial_lvl;
+  always @(*) begin
+    if (av_pos[7:2] != pos_r[7:2]) av_partial_lvl = 2'd3;
+    else                            av_partial_lvl = pos_r[1:0];
+  end
+  wire [15:0] av_buf_q0 = av_head_idx[0] ? attn_buf_b[av_pos_r1]
+                                         : attn_buf_a[av_pos_r1];
+  wire [15:0] av_buf_q1 = av_head_idx[0] ? attn_buf_b[av_pos_r1 + 8'd1]
+                                         : attn_buf_a[av_pos_r1 + 8'd1];
+  wire [15:0] av_buf_q2 = av_head_idx[0] ? attn_buf_b[av_pos_r1 + 8'd2]
+                                         : attn_buf_a[av_pos_r1 + 8'd2];
+  wire [15:0] av_buf_q3 = av_head_idx[0] ? attn_buf_b[av_pos_r1 + 8'd3]
+                                         : attn_buf_a[av_pos_r1 + 8'd3];
   always @(posedge clk_i) begin
-    av_pos_r1     <= av_pos;
-    av_partial_r1 <= av_partial;
-    attn_val_a_r  <= av_head_idx[0] ? attn_buf_b[av_pos_r1]
-                                    : attn_buf_a[av_pos_r1];
-    attn_val_b_r  <= av_partial_r1 ? 16'd0
-                                   : (av_head_idx[0] ? attn_buf_b[av_pos_r1 + 8'd1]
-                                                     : attn_buf_a[av_pos_r1 + 8'd1]);
+    av_pos_r1      <= av_pos;
+    av_partial_r1  <= av_partial_lvl;
+    attn_val_q0_r  <= av_buf_q0;
+    attn_val_q1_r  <= (av_partial_r1 < 2'd1) ? 16'd0 : av_buf_q1;
+    attn_val_q2_r  <= (av_partial_r1 < 2'd2) ? 16'd0 : av_buf_q2;
+    attn_val_q3_r  <= (av_partial_r1 < 2'd3) ? 16'd0 : av_buf_q3;
   end
 
-  wire [15:0] av_attn_a_fp16, av_attn_b_fp16;
-  q115_to_fp16 u_av_cvt_a (.val_i(attn_val_a_r), .fp16_o(av_attn_a_fp16));
-  q115_to_fp16 u_av_cvt_b (.val_i(attn_val_b_r), .fp16_o(av_attn_b_fp16));
+  wire [15:0] av_attn_q0_fp16, av_attn_q1_fp16, av_attn_q2_fp16, av_attn_q3_fp16;
+  q115_to_fp16 u_av_cvt_q0 (.val_i(attn_val_q0_r), .fp16_o(av_attn_q0_fp16));
+  q115_to_fp16 u_av_cvt_q1 (.val_i(attn_val_q1_r), .fp16_o(av_attn_q1_fp16));
+  q115_to_fp16 u_av_cvt_q2 (.val_i(attn_val_q2_r), .fp16_o(av_attn_q2_fp16));
+  q115_to_fp16 u_av_cvt_q3 (.val_i(attn_val_q3_r), .fp16_o(av_attn_q3_fp16));
 
-  reg [15:0] av_attn_a_fp16_r, av_attn_b_fp16_r;
+  reg [15:0] av_attn_q0_fp16_r, av_attn_q1_fp16_r, av_attn_q2_fp16_r, av_attn_q3_fp16_r;
   always @(posedge clk_i) begin
-    av_attn_a_fp16_r <= av_attn_a_fp16;
-    av_attn_b_fp16_r <= av_attn_b_fp16;
+    av_attn_q0_fp16_r <= av_attn_q0_fp16;
+    av_attn_q1_fp16_r <= av_attn_q1_fp16;
+    av_attn_q2_fp16_r <= av_attn_q2_fp16;
+    av_attn_q3_fp16_r <= av_attn_q3_fp16;
   end
 
   wire av_issue = (av_state == AV_RUN) && (av_cnt < 5'd16);
   wire av_mul_v_in = av_bram_v[2];
 
-  wire        av_mul_a_v_out, av_mul_b_v_out;
-  wire [15:0] av_mac_prod_a,  av_mac_prod_b;
-  fp16_mul u_av_mul_a (
-    .clk_i(clk_i),
-    .valid_i(av_mul_v_in),
-    .a_i(av_attn_a_fp16_r),
-    .b_i(v_rdata_i[15:0]),
-    .valid_o(av_mul_a_v_out),
-    .prod_o(av_mac_prod_a)
-  );
-  fp16_mul u_av_mul_b (
-    .clk_i(clk_i),
-    .valid_i(av_mul_v_in),
-    .a_i(av_attn_b_fp16_r),
-    .b_i(v_rdata_i[31:16]),
-    .valid_o(av_mul_b_v_out),
-    .prod_o(av_mac_prod_b)
-  );
+  wire        av_mul_q0_v_out, av_mul_q1_v_out, av_mul_q2_v_out, av_mul_q3_v_out;
+  wire [15:0] av_mac_prod_q0,  av_mac_prod_q1,  av_mac_prod_q2,  av_mac_prod_q3;
+  fp16_mul u_av_mul_q0 (.clk_i(clk_i), .valid_i(av_mul_v_in),
+    .a_i(av_attn_q0_fp16_r), .b_i(v_rdata_i[15:0]),
+    .valid_o(av_mul_q0_v_out), .prod_o(av_mac_prod_q0));
+  fp16_mul u_av_mul_q1 (.clk_i(clk_i), .valid_i(av_mul_v_in),
+    .a_i(av_attn_q1_fp16_r), .b_i(v_rdata_i[31:16]),
+    .valid_o(av_mul_q1_v_out), .prod_o(av_mac_prod_q1));
+  fp16_mul u_av_mul_q2 (.clk_i(clk_i), .valid_i(av_mul_v_in),
+    .a_i(av_attn_q2_fp16_r), .b_i(v_rdata_i[47:32]),
+    .valid_o(av_mul_q2_v_out), .prod_o(av_mac_prod_q2));
+  fp16_mul u_av_mul_q3 (.clk_i(clk_i), .valid_i(av_mul_v_in),
+    .a_i(av_attn_q3_fp16_r), .b_i(v_rdata_i[63:48]),
+    .valid_o(av_mul_q3_v_out), .prod_o(av_mac_prod_q3));
 
-  // Sum the two products into the running accumulator value across two adders.
-  // sum_add: prod_a + prod_b -> temp. acc_add: av_acc[d] + temp -> av_acc[d]
+  // Balanced add tree: (q0+q1) and (q2+q3) -> total -> acc.
+  // Order is fixed at design time so rtl_ops.py can match bit-exact.
+  wire        av_sum01_v_out, av_sum23_v_out;
+  wire [15:0] av_sum01,       av_sum23;
+  fp16_add u_av_sum01 (.clk_i(clk_i),
+    .valid_i(av_mul_q0_v_out),
+    .a_i(av_mac_prod_q0), .b_i(av_mac_prod_q1),
+    .valid_o(av_sum01_v_out), .sum_o(av_sum01));
+  fp16_add u_av_sum23 (.clk_i(clk_i),
+    .valid_i(av_mul_q2_v_out),
+    .a_i(av_mac_prod_q2), .b_i(av_mac_prod_q3),
+    .valid_o(av_sum23_v_out), .sum_o(av_sum23));
+
   wire        av_sum_v_out;
   wire [15:0] av_sum_temp;
-  fp16_add u_av_sum_add (
-    .clk_i(clk_i),
-    .valid_i(av_mul_a_v_out),
-    .a_i(av_mac_prod_a),
-    .b_i(av_mac_prod_b),
-    .valid_o(av_sum_v_out),
-    .sum_o(av_sum_temp)
-  );
+  fp16_add u_av_sum_total (.clk_i(clk_i),
+    .valid_i(av_sum01_v_out),
+    .a_i(av_sum01), .b_i(av_sum23),
+    .valid_o(av_sum_v_out), .sum_o(av_sum_temp));
 
-  wire [3:0] av_dim_at_add_in  = av_dim_pipe[8];
-  wire [3:0] av_dim_at_add_out = av_dim_pipe[12];
+  wire [3:0] av_dim_at_add_in  = av_dim_pipe[12];
+  wire [3:0] av_dim_at_add_out = av_dim_pipe[16];
 
   wire        av_add_v_out;
   wire [15:0] av_mac_sum;
-  fp16_add u_av_acc_add (
-    .clk_i(clk_i),
+  fp16_add u_av_acc_add (.clk_i(clk_i),
     .valid_i(av_sum_v_out),
-    .a_i(av_acc[av_dim_at_add_in]),
-    .b_i(av_sum_temp),
-    .valid_o(av_add_v_out),
-    .sum_o(av_mac_sum)
-  );
+    .a_i(av_acc[av_dim_at_add_in]), .b_i(av_sum_temp),
+    .valid_o(av_add_v_out), .sum_o(av_mac_sum));
 
   integer j;
 
@@ -542,18 +628,19 @@ module attention (
       av_bram_v      <= 3'b000;
       sc_bram_v      <= 4'b0000;
       av_issue_done  <= 1'b0;
+      av_drain_cnt   <= 5'd0;
       score_head_idx <= 3'd0;
       av_head_idx    <= 3'd0;
       scored_count   <= 4'd0;
       av_done_count  <= 4'd0;
-      sc_red_a_lo_pend <= 1'b0;
-      sc_red_a_hi_pend <= 1'b0;
-      sc_red_b_lo_pend <= 1'b0;
-      sc_red_b_hi_pend <= 1'b0;
-      sc_red_c_lo_pend <= 1'b0;
-      sc_red_c_hi_pend <= 1'b0;
-      sc_red_d_lo_pend <= 1'b0;
-      sc_red_d_hi_pend <= 1'b0;
+      sc_red_a_q0_pend <= 1'b0; sc_red_a_q1_pend <= 1'b0;
+      sc_red_a_q2_pend <= 1'b0; sc_red_a_q3_pend <= 1'b0;
+      sc_red_b_q0_pend <= 1'b0; sc_red_b_q1_pend <= 1'b0;
+      sc_red_b_q2_pend <= 1'b0; sc_red_b_q3_pend <= 1'b0;
+      sc_red_c_q0_pend <= 1'b0; sc_red_c_q1_pend <= 1'b0;
+      sc_red_c_q2_pend <= 1'b0; sc_red_c_q3_pend <= 1'b0;
+      sc_red_d_q0_pend <= 1'b0; sc_red_d_q1_pend <= 1'b0;
+      sc_red_d_q2_pend <= 1'b0; sc_red_d_q3_pend <= 1'b0;
       sm_a_busy      <= 1'b0;
       sm_b_busy      <= 1'b0;
       sm_a_out_cnt   <= 8'd0;
@@ -586,7 +673,7 @@ module attention (
 
       av_bram_v <= {av_bram_v[1:0], av_issue};
       av_dim_pipe[0] <= av_cnt[3:0];
-      for (j = 1; j < 13; j = j + 1) av_dim_pipe[j] <= av_dim_pipe[j-1];
+      for (j = 1; j < 17; j = j + 1) av_dim_pipe[j] <= av_dim_pipe[j-1];
       if (av_add_v_out) begin
         av_acc[av_dim_at_add_out] <= av_mac_sum;
       end
@@ -597,10 +684,11 @@ module attention (
       sc_dim_pipe[2] <= sc_dim_pipe[1];
       sc_dim_pipe[3] <= sc_dim_pipe[2];
 
-      // sc_red_in_cnt wraps every 16 mul outputs (one pair worth of dims),
-      // advancing mul_pos_sel so the next pair routes to the next reducer
-      // in the 4-way ping-pong
-      if (sc_mul_a_v_out) begin
+      // sc_red_in_cnt wraps every 16 mul outputs, one quad worth of dims,
+      // advancing mul_pos_sel so the next quad routes to the next reducer
+      // slot in the 4-way ping-pong. q0 lane is always valid so its mul
+      // valid_o is the throttle signal.
+      if (sc_mul_q0_v_out) begin
         if (sc_red_in_cnt == 5'd15) begin
           sc_red_in_cnt <= 5'd0;
           mul_pos_sel   <= mul_pos_sel + 2'd1;
@@ -609,14 +697,22 @@ module attention (
         end
       end
 
-      if (sc_red_a_lo_done) sc_red_a_lo_pend <= 1'b1;
-      if (sc_red_a_hi_done) sc_red_a_hi_pend <= 1'b1;
-      if (sc_red_b_lo_done) sc_red_b_lo_pend <= 1'b1;
-      if (sc_red_b_hi_done) sc_red_b_hi_pend <= 1'b1;
-      if (sc_red_c_lo_done) sc_red_c_lo_pend <= 1'b1;
-      if (sc_red_c_hi_done) sc_red_c_hi_pend <= 1'b1;
-      if (sc_red_d_lo_done) sc_red_d_lo_pend <= 1'b1;
-      if (sc_red_d_hi_done) sc_red_d_hi_pend <= 1'b1;
+      if (sc_red_a_q0_done) sc_red_a_q0_pend <= 1'b1;
+      if (sc_red_a_q1_done) sc_red_a_q1_pend <= 1'b1;
+      if (sc_red_a_q2_done) sc_red_a_q2_pend <= 1'b1;
+      if (sc_red_a_q3_done) sc_red_a_q3_pend <= 1'b1;
+      if (sc_red_b_q0_done) sc_red_b_q0_pend <= 1'b1;
+      if (sc_red_b_q1_done) sc_red_b_q1_pend <= 1'b1;
+      if (sc_red_b_q2_done) sc_red_b_q2_pend <= 1'b1;
+      if (sc_red_b_q3_done) sc_red_b_q3_pend <= 1'b1;
+      if (sc_red_c_q0_done) sc_red_c_q0_pend <= 1'b1;
+      if (sc_red_c_q1_done) sc_red_c_q1_pend <= 1'b1;
+      if (sc_red_c_q2_done) sc_red_c_q2_pend <= 1'b1;
+      if (sc_red_c_q3_done) sc_red_c_q3_pend <= 1'b1;
+      if (sc_red_d_q0_done) sc_red_d_q0_pend <= 1'b1;
+      if (sc_red_d_q1_done) sc_red_d_q1_pend <= 1'b1;
+      if (sc_red_d_q2_done) sc_red_d_q2_pend <= 1'b1;
+      if (sc_red_d_q3_done) sc_red_d_q3_pend <= 1'b1;
 
       if (score_state == SC_SCORE) begin
         case (cap_state)
@@ -630,16 +726,24 @@ module attention (
           C_FEED: begin
             sm_in_valid <= 1'b1;
             sm_in_data  <= sc_q167;
-            red_cap_sel <= red_cap_sel + 3'd1;
+            red_cap_sel <= red_cap_sel + 4'd1;
             case (red_cap_sel)
-              3'd0: sc_red_a_lo_pend <= 1'b0;
-              3'd1: sc_red_a_hi_pend <= 1'b0;
-              3'd2: sc_red_b_lo_pend <= 1'b0;
-              3'd3: sc_red_b_hi_pend <= 1'b0;
-              3'd4: sc_red_c_lo_pend <= 1'b0;
-              3'd5: sc_red_c_hi_pend <= 1'b0;
-              3'd6: sc_red_d_lo_pend <= 1'b0;
-              3'd7: sc_red_d_hi_pend <= 1'b0;
+              4'd0:  sc_red_a_q0_pend <= 1'b0;
+              4'd1:  sc_red_a_q1_pend <= 1'b0;
+              4'd2:  sc_red_a_q2_pend <= 1'b0;
+              4'd3:  sc_red_a_q3_pend <= 1'b0;
+              4'd4:  sc_red_b_q0_pend <= 1'b0;
+              4'd5:  sc_red_b_q1_pend <= 1'b0;
+              4'd6:  sc_red_b_q2_pend <= 1'b0;
+              4'd7:  sc_red_b_q3_pend <= 1'b0;
+              4'd8:  sc_red_c_q0_pend <= 1'b0;
+              4'd9:  sc_red_c_q1_pend <= 1'b0;
+              4'd10: sc_red_c_q2_pend <= 1'b0;
+              4'd11: sc_red_c_q3_pend <= 1'b0;
+              4'd12: sc_red_d_q0_pend <= 1'b0;
+              4'd13: sc_red_d_q1_pend <= 1'b0;
+              4'd14: sc_red_d_q2_pend <= 1'b0;
+              4'd15: sc_red_d_q3_pend <= 1'b0;
             endcase
             if (sc_pos_cap == pos_r) begin
               cap_done  <= 1'b1;
@@ -714,19 +818,19 @@ module attention (
             sc_bram_v      <= 4'b0000;
             sc_red_in_cnt  <= 5'd0;
             red_issue_sel  <= 2'd0;
-            red_cap_sel    <= 3'd0;
+            red_cap_sel    <= 4'd0;
             mul_pos_sel    <= 2'd0;
             issue_done     <= 1'b0;
             cap_done       <= 1'b0;
             cap_state      <= C_WAIT;
-            sc_red_a_lo_pend <= 1'b0;
-            sc_red_a_hi_pend <= 1'b0;
-            sc_red_b_lo_pend <= 1'b0;
-            sc_red_b_hi_pend <= 1'b0;
-            sc_red_c_lo_pend <= 1'b0;
-            sc_red_c_hi_pend <= 1'b0;
-            sc_red_d_lo_pend <= 1'b0;
-            sc_red_d_hi_pend <= 1'b0;
+            sc_red_a_q0_pend <= 1'b0; sc_red_a_q1_pend <= 1'b0;
+            sc_red_a_q2_pend <= 1'b0; sc_red_a_q3_pend <= 1'b0;
+            sc_red_b_q0_pend <= 1'b0; sc_red_b_q1_pend <= 1'b0;
+            sc_red_b_q2_pend <= 1'b0; sc_red_b_q3_pend <= 1'b0;
+            sc_red_c_q0_pend <= 1'b0; sc_red_c_q1_pend <= 1'b0;
+            sc_red_c_q2_pend <= 1'b0; sc_red_c_q3_pend <= 1'b0;
+            sc_red_d_q0_pend <= 1'b0; sc_red_d_q1_pend <= 1'b0;
+            sc_red_d_q2_pend <= 1'b0; sc_red_d_q3_pend <= 1'b0;
           end
         end
 
@@ -745,10 +849,10 @@ module attention (
               end
 
               if (!issue_done && sc_cnt == 5'd15) begin
-                if (sc_pos[7:1] == pos_r[7:1]) begin
+                if (sc_pos[7:2] == pos_r[7:2]) begin
                   issue_done <= 1'b1;
                 end else begin
-                  sc_pos        <= sc_pos + 8'd2;
+                  sc_pos        <= sc_pos + 8'd4;
                   sc_cnt        <= 5'd0;
                   red_issue_sel <= red_issue_sel + 2'd1;
                 end
@@ -796,19 +900,19 @@ module attention (
                 sc_bram_v      <= 4'b0000;
                 sc_red_in_cnt  <= 5'd0;
                 red_issue_sel  <= 2'd0;
-                red_cap_sel    <= 3'd0;
+                red_cap_sel    <= 4'd0;
                 mul_pos_sel    <= 2'd0;
                 issue_done     <= 1'b0;
                 cap_done       <= 1'b0;
                 cap_state      <= C_WAIT;
-                sc_red_a_lo_pend <= 1'b0;
-                sc_red_a_hi_pend <= 1'b0;
-                sc_red_b_lo_pend <= 1'b0;
-                sc_red_b_hi_pend <= 1'b0;
-                sc_red_c_lo_pend <= 1'b0;
-                sc_red_c_hi_pend <= 1'b0;
-                sc_red_d_lo_pend <= 1'b0;
-                sc_red_d_hi_pend <= 1'b0;
+                sc_red_a_q0_pend <= 1'b0; sc_red_a_q1_pend <= 1'b0;
+                sc_red_a_q2_pend <= 1'b0; sc_red_a_q3_pend <= 1'b0;
+                sc_red_b_q0_pend <= 1'b0; sc_red_b_q1_pend <= 1'b0;
+                sc_red_b_q2_pend <= 1'b0; sc_red_b_q3_pend <= 1'b0;
+                sc_red_c_q0_pend <= 1'b0; sc_red_c_q1_pend <= 1'b0;
+                sc_red_c_q2_pend <= 1'b0; sc_red_c_q3_pend <= 1'b0;
+                sc_red_d_q0_pend <= 1'b0; sc_red_d_q1_pend <= 1'b0;
+                sc_red_d_q2_pend <= 1'b0; sc_red_d_q3_pend <= 1'b0;
               end
             end
 
@@ -825,6 +929,7 @@ module attention (
                 av_cnt        <= 5'd0;
                 av_bram_v     <= 3'b000;
                 av_issue_done <= 1'b0;
+                av_drain_cnt  <= 5'd0;
                 for (j = 0; j < 16; j = j + 1) av_acc[j] <= 16'd0;
               end
             end
@@ -842,19 +947,21 @@ module attention (
                 end
 
                 if (av_cnt == 5'd15) begin
-                  if (av_pos[7:1] == pos_r[7:1]) begin
+                  if (av_pos[7:2] == pos_r[7:2]) begin
                     av_issue_done <= 1'b1;
                     av_cnt        <= av_cnt + 5'd1;
                   end else begin
-                    av_pos <= av_pos + 8'd2;
+                    av_pos <= av_pos + 8'd4;
                     av_cnt <= 5'd0;
                   end
                 end else begin
                   av_cnt <= av_cnt + 5'd1;
                 end
+              end else if (av_drain_cnt < 5'd17) begin
+                av_drain_cnt <= av_drain_cnt + 5'd1;
               end
 
-              if (av_issue_done && av_add_v_out && av_dim_at_add_out == 4'd15) begin
+              if (av_issue_done && av_drain_cnt == 5'd17) begin
                 av_state <= AV_STORE;
               end
             end
@@ -877,6 +984,7 @@ module attention (
                 av_cnt        <= 5'd0;
                 av_bram_v     <= 3'b000;
                 av_issue_done <= 1'b0;
+                av_drain_cnt  <= 5'd0;
                 for (j = 0; j < 16; j = j + 1) av_acc[j] <= 16'd0;
               end
             end

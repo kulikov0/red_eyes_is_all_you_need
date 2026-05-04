@@ -703,28 +703,26 @@ def rtl_attention_fp16(x_fp16, layer, pos, kv_cache, qkv_w, proj_w,
         # Softmax (unchanged bipartite LUT)
         attn = rtl_softmax(sm_input, lut0, lut1)
 
-        # AV: pair-grouped accumulation matching attention.v's u_av_sum_add
-        # then u_av_acc_add chain. acc = ... + (p0+p1) + (p2+p3) + ...
-        # Partial pair when pos is even forces the upper attn to zero
+        # AV: quad-grouped accumulation matching attention.v's balanced add
+        # tree (q0+q1) and (q2+q3) -> total -> acc. Partial-quad lanes are
+        # forced to zero when (pos mod 4) leaves them past the end
         for d in range(HEAD_DIM):
             acc = 0x0000
             p = 0
             while p <= pos:
-                attn_a = q115_to_fp16(attn[p])
-                v_a    = kv_cache.get((layer, 1, h, p, d), 0x0000)
-                prod_a = fp16_mul(attn_a, v_a)
-                if p + 1 <= pos:
-                    attn_b = q115_to_fp16(attn[p+1])
-                    v_b    = kv_cache.get((layer, 1, h, p+1, d), 0x0000)
-                    prod_b = fp16_mul(attn_b, v_b)
-                else:
-                    prod_b = 0x0000
-                sum_temp = fp16_add(prod_a, prod_b)
-                acc      = fp16_add(acc, sum_temp)
-                p += 2
+                prods = [0x0000, 0x0000, 0x0000, 0x0000]
+                for k in range(4):
+                    if p + k <= pos:
+                        attn_k = q115_to_fp16(attn[p + k])
+                        v_k    = kv_cache.get((layer, 1, h, p + k, d), 0x0000)
+                        prods[k] = fp16_mul(attn_k, v_k)
+                sum01    = fp16_add(prods[0], prods[1])
+                sum23    = fp16_add(prods[2], prods[3])
+                sum_tot  = fp16_add(sum01, sum23)
+                acc      = fp16_add(acc, sum_tot)
+                p += 4
             head_out[h * HEAD_DIM + d] = acc
 
-    # Proj projection: matvec_fp16
     return rtl_matvec_fp16(head_out, proj_w, DIM, DIM, proj_scale_bits)
 
 

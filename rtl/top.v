@@ -41,13 +41,24 @@ module top (
     .CLKFBOUT_MULT_F (4.5),
     .CLKOUT0_DIVIDE_F(10.0)
   ) mmcm_inst (
-    .CLKIN1  (clk_200),
-    .RST     (1'b0),
-    .PWRDWN  (1'b0),
-    .CLKFBOUT(mmcm_fb),
-    .CLKFBIN (mmcm_fb),
-    .CLKOUT0 (clk_90),
-    .LOCKED  (mmcm_locked)
+    .CLKIN1   (clk_200),
+    .RST      (1'b0),
+    .PWRDWN   (1'b0),
+    .CLKFBOUT (mmcm_fb),
+    .CLKFBOUTB(),
+    .CLKFBIN  (mmcm_fb),
+    .CLKOUT0  (clk_90),
+    .CLKOUT0B (),
+    .CLKOUT1  (),
+    .CLKOUT1B (),
+    .CLKOUT2  (),
+    .CLKOUT2B (),
+    .CLKOUT3  (),
+    .CLKOUT3B (),
+    .CLKOUT4  (),
+    .CLKOUT5  (),
+    .CLKOUT6  (),
+    .LOCKED   (mmcm_locked)
   );
 
   wire clk = clk_90;
@@ -98,7 +109,7 @@ module top (
   weight_store u_ws (
     .clk_i       (clk),
     .tensor_sel_i(w_sel),
-    .addr_i      (w_addr),
+    .addr_i      (w_addr[14:0]),
     .data_o      (w_data),
     .scale_o     (w_scale)
   );
@@ -143,7 +154,7 @@ module top (
   // KV caches with independent address ports
   wire        k_we, v_we;
   wire [15:0] k_wdata, v_wdata;
-  wire [31:0] k_rdata, v_rdata;
+  wire [63:0] k_rdata, v_rdata;
   wire [1:0]  k_layer, v_layer;
   wire [2:0]  k_head, v_head;
   wire [7:0]  k_pos, v_pos;
@@ -254,7 +265,6 @@ module top (
                    S_CFG      = 3'd5;
 
   reg [2:0] ctl_state;
-  reg       gen_started;
 
   localparam CMD_GENERATE = 8'hFF;
   localparam CMD_CONFIG   = 8'hFE;
@@ -267,7 +277,6 @@ module top (
       tf_token_in   <= 8'd0;
       tx_start      <= 1'b0;
       tx_data       <= 8'd0;
-      gen_started   <= 1'b0;
       cfg_inv_temp    <= 16'h3C00;
       cfg_top_k       <= 8'd1;
       cfg_seed        <= 16'hACE1;
@@ -288,7 +297,6 @@ module top (
               tf_token_in <= tf_token_in;
               tf_generate <= 1'b1;
               tf_start    <= 1'b1;
-              gen_started <= 1'b0;
               ctl_state   <= S_GENERATE;
             end else if (rx_data == CMD_CONFIG) begin
               cfg_cnt   <= 4'd0;
@@ -386,7 +394,7 @@ module top (
       tx_blink      <= 0;
     end else begin
       // Heartbeat ~0.33s toggle at 90 MHz
-      if (heartbeat_cnt == 24'd30_000_000) begin
+      if (heartbeat_cnt == 26'd30_000_000) begin
         heartbeat_cnt <= 0;
         heartbeat_r   <= ~heartbeat_r;
       end else begin

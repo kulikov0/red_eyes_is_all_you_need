@@ -13,11 +13,27 @@ module tb_kv_cache;
 
   reg         k_we;
   reg  [15:0] k_wdata;
-  wire [31:0] k_rdata;
+  wire [63:0] k_rdata;
 
   reg         v_we;
   reg  [15:0] v_wdata;
-  wire [31:0] v_rdata;
+  wire [63:0] v_rdata;
+
+  reg [15:0] k_sel, v_sel;
+  always @(*) begin
+    case (pos[1:0])
+      2'b00: k_sel = k_rdata[15:0];
+      2'b01: k_sel = k_rdata[31:16];
+      2'b10: k_sel = k_rdata[47:32];
+      2'b11: k_sel = k_rdata[63:48];
+    endcase
+    case (pos[1:0])
+      2'b00: v_sel = v_rdata[15:0];
+      2'b01: v_sel = v_rdata[31:16];
+      2'b10: v_sel = v_rdata[47:32];
+      2'b11: v_sel = v_rdata[63:48];
+    endcase
+  end
 
   kv_cache dut_k (
     .clk_i  (clk),
@@ -100,7 +116,7 @@ module tb_kv_cache;
       @(posedge clk);
       @(posedge clk);
       $fwrite(fd, "T=%0d C=K L=%0d H=%0d P=%0d D=%0d OUT=%04x\n",
-              tnum, l, h, p, d, p[0] ? k_rdata[31:16] : k_rdata[15:0]);
+              tnum, l, h, p, d, k_sel);
     end
   endtask
 
@@ -121,7 +137,7 @@ module tb_kv_cache;
       @(posedge clk);
       @(posedge clk);
       $fwrite(fd, "T=%0d C=V L=%0d H=%0d P=%0d D=%0d OUT=%04x\n",
-              tnum, l, h, p, d, p[0] ? v_rdata[31:16] : v_rdata[15:0]);
+              tnum, l, h, p, d, v_sel);
     end
   endtask
 

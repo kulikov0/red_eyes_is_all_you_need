@@ -27,7 +27,7 @@ module tb_profile;
   wire [3:0]  k_dim,   v_dim;
   wire        k_we;
   wire [15:0] k_wdata;
-  wire [31:0] k_rdata;
+  wire [63:0] k_rdata;
   wire        v_we;
   wire [15:0] v_wdata;
   wire [63:0] v_rdata;
@@ -37,7 +37,7 @@ module tb_profile;
   wire        done;
   wire [15:0] w_scale;
 
-  weight_store         u_ws         (.clk_i(clk), .tensor_sel_i(w_sel), .addr_i(w_addr), .data_o(w_data), .scale_o(w_scale));
+  weight_store         u_ws         (.clk_i(clk), .tensor_sel_i(w_sel), .addr_i(w_addr[14:0]), .data_o(w_data), .scale_o(w_scale));
   weight_store_qkv     u_ws_qkv     (.clk_i(clk), .layer_i(layer_idx), .addr_i(qkv_addr), .data_o(qkv_data), .scale_o(qkv_scale));
   weight_store_proj    u_ws_proj    (.clk_i(clk), .layer_i(layer_idx), .addr_i(proj_addr), .data_o(proj_data), .scale_o(proj_scale));
   weight_store_ff_up   u_ws_ff_up   (.clk_i(clk), .layer_i(layer_idx), .addr_i(ff_up_addr), .data_o(ff_up_data), .scale_o(ff_up_scale));
@@ -45,7 +45,7 @@ module tb_profile;
   weight_store_tok_emb u_ws_tok_emb (.clk_i(clk), .addr_i(tok_emb_addr), .data_o(tok_emb_data), .scale_o(tok_emb_scale));
 
   kv_cache u_k_cache (.clk_i(clk), .layer_i(k_layer), .head_i(k_head), .pos_i(k_pos), .dim_i(k_dim), .we_i(k_we), .wdata_i(k_wdata), .rdata_o(k_rdata));
-  v_cache_w4 u_v_cache (.clk_i(clk), .layer_i(v_layer), .head_i(v_head), .pos_i(v_pos), .dim_i(v_dim), .we_i(v_we), .wdata_i(v_wdata), .rdata_o(v_rdata));
+  kv_cache u_v_cache (.clk_i(clk), .layer_i(v_layer), .head_i(v_head), .pos_i(v_pos), .dim_i(v_dim), .we_i(v_we), .wdata_i(v_wdata), .rdata_o(v_rdata));
 
   transformer_top dut (
     .clk_i(clk), .rst_i(rst), .token_i(token), .start_i(start), .generate_i(gen_mode),
@@ -58,7 +58,7 @@ module tb_profile;
     .tok_emb_addr_o(tok_emb_addr), .tok_emb_data_i(tok_emb_data), .tok_emb_scale_i(tok_emb_scale),
     .k_we_o(k_we), .k_wdata_o(k_wdata), .k_layer_o(k_layer), .k_head_o(k_head), .k_pos_o(k_pos), .k_dim_o(k_dim), .k_rdata_i(k_rdata),
     .v_we_o(v_we), .v_wdata_o(v_wdata), .v_layer_o(v_layer), .v_head_o(v_head), .v_pos_o(v_pos), .v_dim_o(v_dim), .v_rdata_i(v_rdata),
-    .inv_temp_i(16'h3C00), .top_k_i(8'd1), .seed_load_i(1'b0), .seed_i(16'hACE1),
+    .inv_temp_i(16'h3C00), .top_k_i(8'd1), .inv_penalty_i(16'h3C00), .seed_load_i(1'b0), .seed_i(16'hACE1),
     .token_o(out_token), .token_valid_o(token_valid), .busy_o(), .done_o(done)
   );
 
@@ -131,8 +131,39 @@ module tb_profile;
     $display("");
     $display("avg per-token (50 tokens): %0d cycles", cycles_at_token[49] / 50);
     $display("=== TOTAL CYCLES: %0d ===", total_cycles);
-    $display("S_HEADS=%0d  AV_RUN=%0d  AV_WAIT=%0d  SC_SCORE=%0d  SC_PAD=%0d",
-             attn_cnt[3], av_cnt[1], av_cnt[3], sc_cnt[1], sc_cnt[2]);
+    $display("");
+    $display("--- transformer_top state breakdown (cycles, %% of total) ---");
+    $display("  IDLE        : %0d (%0d%%)", top_cnt[0],  (top_cnt[0]*100)/total_cycles);
+    $display("  EMBED       : %0d (%0d%%)", top_cnt[1],  (top_cnt[1]*100)/total_cycles);
+    $display("  LAYER_START : %0d (%0d%%)", top_cnt[2],  (top_cnt[2]*100)/total_cycles);
+    $display("  LAYER_WAIT  : %0d (%0d%%)", top_cnt[3],  (top_cnt[3]*100)/total_cycles);
+    $display("  LN_F_START  : %0d (%0d%%)", top_cnt[4],  (top_cnt[4]*100)/total_cycles);
+    $display("  LN_F_WAIT   : %0d (%0d%%)", top_cnt[5],  (top_cnt[5]*100)/total_cycles);
+    $display("  HEAD_PROJ   : %0d (%0d%%)", top_cnt[6],  (top_cnt[6]*100)/total_cycles);
+    $display("  SAMPLE      : %0d (%0d%%)", top_cnt[7],  (top_cnt[7]*100)/total_cycles);
+    $display("  TOKEN_OUT   : %0d (%0d%%)", top_cnt[8],  (top_cnt[8]*100)/total_cycles);
+    $display("");
+    $display("--- transformer_layer state breakdown (cycles, %% of LAYER_WAIT) ---");
+    $display("  IDLE        : %0d (%0d%%)", tl_cnt[0],  (tl_cnt[0]*100)/total_cycles);
+    $display("  LOAD        : %0d (%0d%%)", tl_cnt[1],  (tl_cnt[1]*100)/total_cycles);
+    $display("  SAVE_RES    : %0d (%0d%%)", tl_cnt[2],  (tl_cnt[2]*100)/total_cycles);
+    $display("  LN_START    : %0d (%0d%%)", tl_cnt[3],  (tl_cnt[3]*100)/total_cycles);
+    $display("  LN_WAIT     : %0d (%0d%%)", tl_cnt[4],  (tl_cnt[4]*100)/total_cycles);
+    $display("  ATTN        : %0d (%0d%%)", tl_cnt[5],  (tl_cnt[5]*100)/total_cycles);
+    $display("  RES_ADD     : %0d (%0d%%)", tl_cnt[6],  (tl_cnt[6]*100)/total_cycles);
+    $display("  FF_UP       : %0d (%0d%%)", tl_cnt[7],  (tl_cnt[7]*100)/total_cycles);
+    $display("  GELU        : %0d (%0d%%)", tl_cnt[8],  (tl_cnt[8]*100)/total_cycles);
+    $display("  FF_DOWN     : %0d (%0d%%)", tl_cnt[9],  (tl_cnt[9]*100)/total_cycles);
+    $display("  STORE_OUT   : %0d (%0d%%)", tl_cnt[10], (tl_cnt[10]*100)/total_cycles);
+    $display("  DONE        : %0d (%0d%%)", tl_cnt[11], (tl_cnt[11]*100)/total_cycles);
+    $display("");
+    $display("--- attention substate breakdown ---");
+    $display("  attn[0..7]  = %0d %0d %0d %0d %0d %0d %0d %0d",
+             attn_cnt[0],attn_cnt[1],attn_cnt[2],attn_cnt[3],attn_cnt[4],attn_cnt[5],attn_cnt[6],attn_cnt[7]);
+    $display("  score[0..7] = %0d %0d %0d %0d %0d %0d %0d %0d",
+             sc_cnt[0],sc_cnt[1],sc_cnt[2],sc_cnt[3],sc_cnt[4],sc_cnt[5],sc_cnt[6],sc_cnt[7]);
+    $display("  av[0..7]    = %0d %0d %0d %0d %0d %0d %0d %0d",
+             av_cnt[0],av_cnt[1],av_cnt[2],av_cnt[3],av_cnt[4],av_cnt[5],av_cnt[6],av_cnt[7]);
 
     $finish;
   end

@@ -9,7 +9,7 @@ module weight_store_qkv (
   input  wire [1:0]  layer_i,
   input  wire [11:0] addr_i,
   output reg  [127:0] data_o,
-  (* MAX_FANOUT = "16" *) output reg [15:0] scale_o
+  (* MAX_FANOUT = "32" *) output reg [15:0] scale_o
 );
 
   `include "weight_scales.vh"

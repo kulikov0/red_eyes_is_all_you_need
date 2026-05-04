@@ -42,10 +42,10 @@ module tb_transformer_layer_stress;
   wire [3:0]  k_dim,   v_dim;
   wire        k_we;
   wire [15:0] k_wdata;
-  wire [31:0] k_rdata;
+  wire [63:0] k_rdata;
   wire        v_we;
   wire [15:0] v_wdata;
-  wire [31:0] v_rdata;
+  wire [63:0] v_rdata;
 
   wire done;
 
@@ -78,7 +78,7 @@ module tb_transformer_layer_stress;
   weight_store u_ws (
     .clk_i       (clk),
     .tensor_sel_i(w_sel),
-    .addr_i      (w_addr),
+    .addr_i      (w_addr[14:0]),
     .data_o      (w_data),
     .scale_o     (w_scale)
   );

@@ -79,7 +79,7 @@ module tb_fp16;
 
   // fp16_rsqrt (2-cycle registered, needs LUT BRAM)
   reg         rsqrt_valid_in;
-  reg  [15:0] rsqrt_in;
+  reg  [12:0] rsqrt_in;
   wire [15:0] rsqrt_out;
   fp16_rsqrt u_rsqrt (
     .clk_i(clk), .valid_i(rsqrt_valid_in),
@@ -161,7 +161,7 @@ module tb_fp16;
     add_valid_in = 1'b0; add_a = 16'd0; add_b = 16'd0;
     mul_valid_in = 1'b0; mul_a = 16'd0; mul_b = 16'd0;
     cvt_in = 8'd0; to_in = 16'd0; q167_in = 16'd0; q115_in = 16'd0;
-    rsqrt_valid_in = 1'b0; rsqrt_in = 16'd0;
+    rsqrt_valid_in = 1'b0; rsqrt_in = 13'd0;
     red_clear = 1'b0; red_valid = 1'b0; red_flush = 1'b0; red_data = 16'd0;
     mv3_start = 1'b0;
     mv3_scale = 16'h2c00;
@@ -318,7 +318,7 @@ module tb_fp16;
     $fwrite(fd, "=== fp16_rsqrt (%0d tests) ===\n", N_RSQRT);
     for (ti = 0; ti < N_RSQRT; ti = ti + 1) begin
       @(posedge clk);
-      rsqrt_in = tv_rsqrt[ti][31:16];
+      rsqrt_in = tv_rsqrt[ti][30:18];
       rsqrt_valid_in = 1'b1;
       @(posedge clk);
       rsqrt_valid_in = 1'b0;

@@ -19,15 +19,15 @@ module fp16_rsqrt #(
 ) (
   input  wire        clk_i,
   input  wire        valid_i,
-  input  wire [15:0] val_i,
+  input  wire [12:0] val_i,
   output reg         valid_o,
   output reg  [15:0] result_o
 );
 
-  // Stage 0: extract fields, compute LUT address
-
-  wire [4:0] e = val_i[14:10];
-  wire [9:0] f = val_i[9:0];
+  // val_i packs the fp16 fields actually consumed: {e[4:0], f[9:2]}.
+  // Caller drops the sign bit and the bottom mantissa bits before passing
+  wire [4:0] e = val_i[12:8];
+  wire [7:0] f_hi = val_i[7:0];
   wire is_zero = (e == 5'd0);
   wire is_inf  = (e == 5'd31);
 
@@ -39,7 +39,7 @@ module fp16_rsqrt #(
   (* ram_style = "block" *) reg [15:0] lut_mem [0:511];
   initial $readmemh(HEX_FILE, lut_mem);
 
-  wire [8:0] lut_addr = {parity, f[9:2]};
+  wire [8:0] lut_addr = {parity, f_hi};
 
   // Stage 1: LUT read + pipeline registers
 

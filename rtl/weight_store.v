@@ -4,7 +4,7 @@
 module weight_store (
   input  wire        clk_i,
   input  wire [ 5:0] tensor_sel_i,  // 0..35
-  input  wire [15:0] addr_i,        // max depth 65536 -> 16 bits
+  input  wire [14:0] addr_i,
   output reg  [ 7:0] data_o,
   output reg  [15:0] scale_o
 );
@@ -12,8 +12,7 @@ module weight_store (
   // FP16 scale factors
   `include "weight_scales.vh"
 
-  // Boundary register on inputs breaks the FSM_state -> BRAM addr fanout
-  reg [15:0] addr_r;
+  reg [14:0] addr_r;
   reg [5:0]  sel_r1;
   always @(posedge clk_i) begin
     addr_r <= addr_i;
@@ -36,7 +35,7 @@ module weight_store (
     .HEX_FILE("/home/user/red_eyes_is_all_you_need/mem/pos_emb_weight.hex")
   ) u_pos_emb (
     .clk_i (clk_i),
-    .addr_i(addr_r[14:0]),
+    .addr_i(addr_r),
     .data_o(d_pos_emb)
   );
 
