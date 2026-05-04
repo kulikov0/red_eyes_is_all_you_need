@@ -15,7 +15,7 @@ import sys
 from rtl_ops import (
     DIM, MEM,
     to_signed8, fp16_to_float, fp16_from_int,
-    load_hex, load_hex_w16, load_lut16, load_gelu_pwl, parse_scale_bits,
+    load_hex, load_hex_w16, load_hex_w32, load_lut16, load_gelu_pwl, parse_scale_bits,
     rtl_transformer_layer_fp16,
 )
 from ideal_ops import ideal_transformer_layer_fp16
@@ -92,10 +92,10 @@ if __name__ == "__main__":
         L = td["layer"]
         if L in layer_data:
             continue
-        qkv_w = load_hex_w16(os.path.join(MEM, f"block{L}_attn_qkv_weight.hex"), DIM)
-        proj_w = load_hex_w16(os.path.join(MEM, f"block{L}_attn_proj_weight.hex"), DIM)
-        ff_up_w = load_hex_w16(os.path.join(MEM, f"block{L}_ff_up_weight.hex"), DIM)
-        ff_down_w = load_hex_w16(os.path.join(MEM, f"block{L}_ff_down_weight.hex"), 512)
+        qkv_w = load_hex_w32(os.path.join(MEM, f"block{L}_attn_qkv_weight.hex"), DIM)
+        proj_w = load_hex_w32(os.path.join(MEM, f"block{L}_attn_proj_weight.hex"), DIM)
+        ff_up_w = load_hex_w32(os.path.join(MEM, f"block{L}_ff_up_weight.hex"), DIM)
+        ff_down_w = load_hex_w32(os.path.join(MEM, f"block{L}_ff_down_weight.hex"), 512)
         scales = {
             'ln1_gamma': parse_scale_bits(f"SCALE_BLOCK{L}_LN1_WEIGHT"),
             'ln1_beta':  parse_scale_bits(f"SCALE_BLOCK{L}_LN1_BIAS"),

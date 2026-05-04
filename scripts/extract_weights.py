@@ -52,8 +52,20 @@ W16_SUFFIXES = (
     "tok_emb_weight",
 )
 
+# Banks consumed by matvec_fp16_w32 use 256-bit packed words pairing col and
+# col+IN/2 for the same 16 rows. tok_emb stays 128-bit for the w16 head_proj
+W32_SUFFIXES = (
+    "_attn_qkv_weight",
+    "_attn_proj_weight",
+    "_ff_up_weight",
+    "_ff_down_weight",
+)
+
 def is_w16(stem):
     return any(stem.endswith(s) for s in W16_SUFFIXES)
+
+def is_w32(stem):
+    return any(stem.endswith(s) for s in W32_SUFFIXES)
 
 
 # Generate tb/tb_weight_store.v with expected values derived from tensor data.
@@ -95,10 +107,10 @@ def generate_tb_weight_store(tensors):
         bucket[k].sort(key=lambda x: x[0])
 
     bank_meta = {
-        "qkv":     {"depth": 3072, "addr_w": 12},
-        "proj":    {"depth": 1024, "addr_w": 10},
-        "ff_up":   {"depth": 4096, "addr_w": 12},
-        "ff_down": {"depth": 4096, "addr_w": 12},
+        "qkv":     {"depth": 1536, "addr_w": 11},
+        "proj":    {"depth": 512,  "addr_w": 9},
+        "ff_up":   {"depth": 2048, "addr_w": 11},
+        "ff_down": {"depth": 2048, "addr_w": 11},
     }
     tok_depth = (tok_emb[1]["shape"][0] // 16) * tok_emb[1]["shape"][1]
 
@@ -147,26 +159,32 @@ module tb_weight_store;
   weight_store uut (
     .clk_i       (clk),
     .tensor_sel_i(tensor_sel),
-    .addr_i      (addr),
+    .addr_i      (addr[14:0]),
     .data_o      (data),
     .scale_o     (scale)
   );
 
-  // W16 banks
+  // W32 banks: 256-bit packed words pairing col and col+IN/2 per row group.
+  // tok_emb stays in 128-bit w16 packing because head_proj uses matvec_fp16_w16
   reg [1:0]  layer;
-  reg [11:0] qkv_addr;
-  reg [9:0]  proj_addr;
-  reg [11:0] ff_up_addr;
-  reg [11:0] ff_down_addr;
+  reg [{bank_meta["qkv"]["addr_w"]-1}:0] qkv_addr;
+  reg [{bank_meta["proj"]["addr_w"]-1}:0]  proj_addr;
+  reg [{bank_meta["ff_up"]["addr_w"]-1}:0] ff_up_addr;
+  reg [{bank_meta["ff_down"]["addr_w"]-1}:0] ff_down_addr;
   reg [10:0] tok_emb_addr;
-  wire [127:0] qkv_data, proj_data, ff_up_data, ff_down_data, tok_emb_data;
+  wire [255:0] qkv_data, proj_data, ff_up_data, ff_down_data;
+  wire [127:0] tok_emb_data;
   wire [15:0]  qkv_scale, proj_scale, ff_up_scale, ff_down_scale, tok_emb_scale;
 
-  weight_store_qkv     u_ws_qkv     (.clk_i(clk), .layer_i(layer), .addr_i(qkv_addr),     .data_o(qkv_data),     .scale_o(qkv_scale));
-  weight_store_proj    u_ws_proj    (.clk_i(clk), .layer_i(layer), .addr_i(proj_addr),    .data_o(proj_data),    .scale_o(proj_scale));
-  weight_store_ff_up   u_ws_ff_up   (.clk_i(clk), .layer_i(layer), .addr_i(ff_up_addr),   .data_o(ff_up_data),   .scale_o(ff_up_scale));
-  weight_store_ff_down u_ws_ff_down (.clk_i(clk), .layer_i(layer), .addr_i(ff_down_addr), .data_o(ff_down_data), .scale_o(ff_down_scale));
-  weight_store_tok_emb u_ws_tok_emb (.clk_i(clk),                  .addr_i(tok_emb_addr), .data_o(tok_emb_data), .scale_o(tok_emb_scale));
+  weight_store_qkv     u_ws_qkv     (.clk_i(clk), .layer_i(layer),
+    .addr_i(qkv_addr), .data_o(qkv_data), .scale_o(qkv_scale));
+  weight_store_proj    u_ws_proj    (.clk_i(clk), .layer_i(layer),
+    .addr_i(proj_addr), .data_o(proj_data), .scale_o(proj_scale));
+  weight_store_ff_up   u_ws_ff_up   (.clk_i(clk), .layer_i(layer),
+    .addr_i(ff_up_addr), .data_o(ff_up_data), .scale_o(ff_up_scale));
+  weight_store_ff_down u_ws_ff_down (.clk_i(clk), .layer_i(layer),
+    .addr_i(ff_down_addr), .data_o(ff_down_data), .scale_o(ff_down_scale));
+  weight_store_tok_emb u_ws_tok_emb (.clk_i(clk), .addr_i(tok_emb_addr), .data_o(tok_emb_data), .scale_o(tok_emb_scale));
 
   initial clk = 1'b0;
   always #5 clk = ~clk;
@@ -205,10 +223,10 @@ module tb_weight_store;
 
     errors = 0;
     layer        = 2'd0;
-    qkv_addr     = 12'd0;
-    proj_addr    = 10'd0;
-    ff_up_addr   = 12'd0;
-    ff_down_addr = 12'd0;
+    qkv_addr     = {bank_meta["qkv"]["addr_w"]}'d0;
+    proj_addr    = {bank_meta["proj"]["addr_w"]}'d0;
+    ff_up_addr   = {bank_meta["ff_up"]["addr_w"]}'d0;
+    ff_down_addr = {bank_meta["ff_down"]["addr_w"]}'d0;
     tok_emb_addr = 11'd0;
 
     fd = $fopen("{log_path}", "w");
@@ -257,7 +275,7 @@ module tb_weight_store;
     // plus BRAM output reg
     for (i = 0; i < 4; i = i + 1) begin
       layer    = i[1:0];
-      qkv_addr = 12'd0;
+      qkv_addr = {bank_meta["qkv"]["addr_w"]}'d0;
       @(posedge clk);
       @(posedge clk);
       #1;
@@ -270,23 +288,23 @@ module tb_weight_store;
         $fwrite(fd, "OK   tensor %0d  addr=0  data=0x%02x\\n", qkv_idx[i], qkv_data[7:0]);
       end
 
-      qkv_addr = 12'd{bank_meta["qkv"]["depth"] - 1};
+      qkv_addr = {bank_meta["qkv"]["addr_w"]}'d{bank_meta["qkv"]["depth"] - 1};
       @(posedge clk);
       @(posedge clk);
       #1;
-      if (qkv_data[127:120] !== qkv_last[i]) begin
-        $display("FAIL tensor %0d last: got 0x%02x, exp 0x%02x", qkv_idx[i], qkv_data[127:120], qkv_last[i]);
-        $fwrite(fd, "FAIL tensor %0d last: got 0x%02x, exp 0x%02x\\n", qkv_idx[i], qkv_data[127:120], qkv_last[i]);
+      if (qkv_data[255:248] !== qkv_last[i]) begin
+        $display("FAIL tensor %0d last: got 0x%02x, exp 0x%02x", qkv_idx[i], qkv_data[255:248], qkv_last[i]);
+        $fwrite(fd, "FAIL tensor %0d last: got 0x%02x, exp 0x%02x\\n", qkv_idx[i], qkv_data[255:248], qkv_last[i]);
         errors = errors + 1;
       end else begin
-        $display("OK   tensor %0d  addr=%0d  data=0x%02x", qkv_idx[i], qkv_addr, qkv_data[127:120]);
-        $fwrite(fd, "OK   tensor %0d  addr=%0d  data=0x%02x\\n", qkv_idx[i], qkv_addr, qkv_data[127:120]);
+        $display("OK   tensor %0d  addr=%0d  data=0x%02x", qkv_idx[i], qkv_addr, qkv_data[255:248]);
+        $fwrite(fd, "OK   tensor %0d  addr=%0d  data=0x%02x\\n", qkv_idx[i], qkv_addr, qkv_data[255:248]);
       end
     end
 
     for (i = 0; i < 4; i = i + 1) begin
       layer     = i[1:0];
-      proj_addr = 10'd0;
+      proj_addr = {bank_meta["proj"]["addr_w"]}'d0;
       @(posedge clk);
       @(posedge clk);
       #1;
@@ -299,23 +317,23 @@ module tb_weight_store;
         $fwrite(fd, "OK   tensor %0d  addr=0  data=0x%02x\\n", proj_idx[i], proj_data[7:0]);
       end
 
-      proj_addr = 10'd{bank_meta["proj"]["depth"] - 1};
+      proj_addr = {bank_meta["proj"]["addr_w"]}'d{bank_meta["proj"]["depth"] - 1};
       @(posedge clk);
       @(posedge clk);
       #1;
-      if (proj_data[127:120] !== proj_last[i]) begin
-        $display("FAIL tensor %0d last: got 0x%02x, exp 0x%02x", proj_idx[i], proj_data[127:120], proj_last[i]);
-        $fwrite(fd, "FAIL tensor %0d last: got 0x%02x, exp 0x%02x\\n", proj_idx[i], proj_data[127:120], proj_last[i]);
+      if (proj_data[255:248] !== proj_last[i]) begin
+        $display("FAIL tensor %0d last: got 0x%02x, exp 0x%02x", proj_idx[i], proj_data[255:248], proj_last[i]);
+        $fwrite(fd, "FAIL tensor %0d last: got 0x%02x, exp 0x%02x\\n", proj_idx[i], proj_data[255:248], proj_last[i]);
         errors = errors + 1;
       end else begin
-        $display("OK   tensor %0d  addr=%0d  data=0x%02x", proj_idx[i], proj_addr, proj_data[127:120]);
-        $fwrite(fd, "OK   tensor %0d  addr=%0d  data=0x%02x\\n", proj_idx[i], proj_addr, proj_data[127:120]);
+        $display("OK   tensor %0d  addr=%0d  data=0x%02x", proj_idx[i], proj_addr, proj_data[255:248]);
+        $fwrite(fd, "OK   tensor %0d  addr=%0d  data=0x%02x\\n", proj_idx[i], proj_addr, proj_data[255:248]);
       end
     end
 
     for (i = 0; i < 4; i = i + 1) begin
       layer      = i[1:0];
-      ff_up_addr = 12'd0;
+      ff_up_addr = {bank_meta["ff_up"]["addr_w"]}'d0;
       @(posedge clk);
       @(posedge clk);
       #1;
@@ -328,23 +346,23 @@ module tb_weight_store;
         $fwrite(fd, "OK   tensor %0d  addr=0  data=0x%02x\\n", ff_up_idx[i], ff_up_data[7:0]);
       end
 
-      ff_up_addr = 12'd{bank_meta["ff_up"]["depth"] - 1};
+      ff_up_addr = {bank_meta["ff_up"]["addr_w"]}'d{bank_meta["ff_up"]["depth"] - 1};
       @(posedge clk);
       @(posedge clk);
       #1;
-      if (ff_up_data[127:120] !== ff_up_last[i]) begin
-        $display("FAIL tensor %0d last: got 0x%02x, exp 0x%02x", ff_up_idx[i], ff_up_data[127:120], ff_up_last[i]);
-        $fwrite(fd, "FAIL tensor %0d last: got 0x%02x, exp 0x%02x\\n", ff_up_idx[i], ff_up_data[127:120], ff_up_last[i]);
+      if (ff_up_data[255:248] !== ff_up_last[i]) begin
+        $display("FAIL tensor %0d last: got 0x%02x, exp 0x%02x", ff_up_idx[i], ff_up_data[255:248], ff_up_last[i]);
+        $fwrite(fd, "FAIL tensor %0d last: got 0x%02x, exp 0x%02x\\n", ff_up_idx[i], ff_up_data[255:248], ff_up_last[i]);
         errors = errors + 1;
       end else begin
-        $display("OK   tensor %0d  addr=%0d  data=0x%02x", ff_up_idx[i], ff_up_addr, ff_up_data[127:120]);
-        $fwrite(fd, "OK   tensor %0d  addr=%0d  data=0x%02x\\n", ff_up_idx[i], ff_up_addr, ff_up_data[127:120]);
+        $display("OK   tensor %0d  addr=%0d  data=0x%02x", ff_up_idx[i], ff_up_addr, ff_up_data[255:248]);
+        $fwrite(fd, "OK   tensor %0d  addr=%0d  data=0x%02x\\n", ff_up_idx[i], ff_up_addr, ff_up_data[255:248]);
       end
     end
 
     for (i = 0; i < 4; i = i + 1) begin
       layer        = i[1:0];
-      ff_down_addr = 12'd0;
+      ff_down_addr = {bank_meta["ff_down"]["addr_w"]}'d0;
       @(posedge clk);
       @(posedge clk);
       #1;
@@ -357,17 +375,17 @@ module tb_weight_store;
         $fwrite(fd, "OK   tensor %0d  addr=0  data=0x%02x\\n", ff_down_idx[i], ff_down_data[7:0]);
       end
 
-      ff_down_addr = 12'd{bank_meta["ff_down"]["depth"] - 1};
+      ff_down_addr = {bank_meta["ff_down"]["addr_w"]}'d{bank_meta["ff_down"]["depth"] - 1};
       @(posedge clk);
       @(posedge clk);
       #1;
-      if (ff_down_data[127:120] !== ff_down_last[i]) begin
-        $display("FAIL tensor %0d last: got 0x%02x, exp 0x%02x", ff_down_idx[i], ff_down_data[127:120], ff_down_last[i]);
-        $fwrite(fd, "FAIL tensor %0d last: got 0x%02x, exp 0x%02x\\n", ff_down_idx[i], ff_down_data[127:120], ff_down_last[i]);
+      if (ff_down_data[255:248] !== ff_down_last[i]) begin
+        $display("FAIL tensor %0d last: got 0x%02x, exp 0x%02x", ff_down_idx[i], ff_down_data[255:248], ff_down_last[i]);
+        $fwrite(fd, "FAIL tensor %0d last: got 0x%02x, exp 0x%02x\\n", ff_down_idx[i], ff_down_data[255:248], ff_down_last[i]);
         errors = errors + 1;
       end else begin
-        $display("OK   tensor %0d  addr=%0d  data=0x%02x", ff_down_idx[i], ff_down_addr, ff_down_data[127:120]);
-        $fwrite(fd, "OK   tensor %0d  addr=%0d  data=0x%02x\\n", ff_down_idx[i], ff_down_addr, ff_down_data[127:120]);
+        $display("OK   tensor %0d  addr=%0d  data=0x%02x", ff_down_idx[i], ff_down_addr, ff_down_data[255:248]);
+        $fwrite(fd, "OK   tensor %0d  addr=%0d  data=0x%02x\\n", ff_down_idx[i], ff_down_addr, ff_down_data[255:248]);
       end
     end
 
@@ -465,16 +483,29 @@ def main():
         if t["size"] == 128:
             continue
         hex_path = os.path.join(MEM, t["hex_file"])
-        if is_w16(t["stem"]):
+        if is_w32(t["stem"]):
             out_dim, in_dim = t["shape"]
             data = np.frombuffer(t["data"], dtype=np.uint8).reshape(out_dim, in_dim)
             with open(hex_path, "w") as hf:
-                for g in range(out_dim // 16):
-                    rows = [data[16 * g + L] for L in range(16)]
-                    for c in range(in_dim):
+                for group_idx in range(out_dim // 16):
+                    rows = [data[16 * group_idx + lane] for lane in range(16)]
+                    for col in range(in_dim // 2):
                         word = 0
-                        for L in range(16):
-                            word |= int(rows[L][c]) << (L * 8)
+                        for lane in range(16):
+                            word |= int(rows[lane][col])              << (lane * 8)
+                            word |= int(rows[lane][col + in_dim // 2]) << (lane * 8 + 128)
+                        hf.write(f"{word:064x}\n")
+            print(f"  wrote {hex_path}: {t['size']} bytes packed into {(out_dim // 16) * (in_dim // 2)} 256-bit words")
+        elif is_w16(t["stem"]):
+            out_dim, in_dim = t["shape"]
+            data = np.frombuffer(t["data"], dtype=np.uint8).reshape(out_dim, in_dim)
+            with open(hex_path, "w") as hf:
+                for group_idx in range(out_dim // 16):
+                    rows = [data[16 * group_idx + lane] for lane in range(16)]
+                    for col in range(in_dim):
+                        word = 0
+                        for lane in range(16):
+                            word |= int(rows[lane][col]) << (lane * 8)
                         hf.write(f"{word:032x}\n")
             print(f"  wrote {hex_path}: {t['size']} bytes packed into {(out_dim // 16) * in_dim} 128-bit words")
         else:
@@ -492,7 +523,32 @@ def main():
         hex_path = os.path.join(MEM, t["hex_file"])
         with open(hex_path, "r") as hf:
             lines = hf.read().strip().split("\n")
-        if is_w16(t["stem"]):
+        if is_w32(t["stem"]):
+            out_dim, in_dim = t["shape"]
+            expected_lines = (out_dim // 16) * (in_dim // 2)
+            data = np.frombuffer(t["data"], dtype=np.uint8).reshape(out_dim, in_dim)
+            if len(lines) != expected_lines:
+                print(f"VERIFY FAIL: {t['name']} line count {len(lines)} != {expected_lines}")
+                errors += 1
+                continue
+            stop = False
+            for group_idx in range(out_dim // 16):
+                rows = [data[16 * group_idx + lane] for lane in range(16)]
+                for col in range(in_dim // 2):
+                    word_idx = group_idx * (in_dim // 2) + col
+                    word = int(lines[word_idx], 16)
+                    expected = 0
+                    for lane in range(16):
+                        expected |= int(rows[lane][col])              << (lane * 8)
+                        expected |= int(rows[lane][col + in_dim // 2]) << (lane * 8 + 128)
+                    if word != expected:
+                        print(f"VERIFY FAIL: {t['name']} word[{word_idx}] hex={word:064x} expected {expected:064x}")
+                        errors += 1
+                        stop = True
+                        break
+                if stop:
+                    break
+        elif is_w16(t["stem"]):
             out_dim, in_dim = t["shape"]
             expected_lines = (out_dim // 16) * in_dim
             data = np.frombuffer(t["data"], dtype=np.uint8).reshape(out_dim, in_dim)
@@ -501,16 +557,16 @@ def main():
                 errors += 1
                 continue
             stop = False
-            for g in range(out_dim // 16):
-                rows = [data[16 * g + L] for L in range(16)]
-                for c in range(in_dim):
-                    j = g * in_dim + c
-                    word = int(lines[j], 16)
+            for group_idx in range(out_dim // 16):
+                rows = [data[16 * group_idx + lane] for lane in range(16)]
+                for col in range(in_dim):
+                    word_idx = group_idx * in_dim + col
+                    word = int(lines[word_idx], 16)
                     expected = 0
-                    for L in range(16):
-                        expected |= int(rows[L][c]) << (L * 8)
+                    for lane in range(16):
+                        expected |= int(rows[lane][col]) << (lane * 8)
                     if word != expected:
-                        print(f"VERIFY FAIL: {t['name']} word[{j}] hex={word:032x} expected {expected:032x}")
+                        print(f"VERIFY FAIL: {t['name']} word[{word_idx}] hex={word:032x} expected {expected:032x}")
                         errors += 1
                         stop = True
                         break

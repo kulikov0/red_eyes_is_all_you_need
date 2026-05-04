@@ -17,21 +17,27 @@ module tb_weight_store;
     .scale_o     (scale)
   );
 
-  // W16 banks
+  // W32 banks: 256-bit packed words pairing col and col+IN/2 per row group.
+  // tok_emb stays in 128-bit w16 packing because head_proj uses matvec_fp16_w16
   reg [1:0]  layer;
-  reg [11:0] qkv_addr;
-  reg [9:0]  proj_addr;
-  reg [11:0] ff_up_addr;
-  reg [11:0] ff_down_addr;
+  reg [10:0] qkv_addr;
+  reg [8:0]  proj_addr;
+  reg [10:0] ff_up_addr;
+  reg [10:0] ff_down_addr;
   reg [10:0] tok_emb_addr;
-  wire [127:0] qkv_data, proj_data, ff_up_data, ff_down_data, tok_emb_data;
+  wire [255:0] qkv_data, proj_data, ff_up_data, ff_down_data;
+  wire [127:0] tok_emb_data;
   wire [15:0]  qkv_scale, proj_scale, ff_up_scale, ff_down_scale, tok_emb_scale;
 
-  weight_store_qkv     u_ws_qkv     (.clk_i(clk), .layer_i(layer), .addr_i(qkv_addr),     .data_o(qkv_data),     .scale_o(qkv_scale));
-  weight_store_proj    u_ws_proj    (.clk_i(clk), .layer_i(layer), .addr_i(proj_addr),    .data_o(proj_data),    .scale_o(proj_scale));
-  weight_store_ff_up   u_ws_ff_up   (.clk_i(clk), .layer_i(layer), .addr_i(ff_up_addr),   .data_o(ff_up_data),   .scale_o(ff_up_scale));
-  weight_store_ff_down u_ws_ff_down (.clk_i(clk), .layer_i(layer), .addr_i(ff_down_addr), .data_o(ff_down_data), .scale_o(ff_down_scale));
-  weight_store_tok_emb u_ws_tok_emb (.clk_i(clk),                  .addr_i(tok_emb_addr), .data_o(tok_emb_data), .scale_o(tok_emb_scale));
+  weight_store_qkv     u_ws_qkv     (.clk_i(clk), .layer_i(layer),
+    .addr_i(qkv_addr), .data_o(qkv_data), .scale_o(qkv_scale));
+  weight_store_proj    u_ws_proj    (.clk_i(clk), .layer_i(layer),
+    .addr_i(proj_addr), .data_o(proj_data), .scale_o(proj_scale));
+  weight_store_ff_up   u_ws_ff_up   (.clk_i(clk), .layer_i(layer),
+    .addr_i(ff_up_addr), .data_o(ff_up_data), .scale_o(ff_up_scale));
+  weight_store_ff_down u_ws_ff_down (.clk_i(clk), .layer_i(layer),
+    .addr_i(ff_down_addr), .data_o(ff_down_data), .scale_o(ff_down_scale));
+  weight_store_tok_emb u_ws_tok_emb (.clk_i(clk), .addr_i(tok_emb_addr), .data_o(tok_emb_data), .scale_o(tok_emb_scale));
 
   initial clk = 1'b0;
   always #5 clk = ~clk;
@@ -126,10 +132,10 @@ module tb_weight_store;
 
     errors = 0;
     layer        = 2'd0;
-    qkv_addr     = 12'd0;
-    proj_addr    = 10'd0;
-    ff_up_addr   = 12'd0;
-    ff_down_addr = 12'd0;
+    qkv_addr     = 11'd0;
+    proj_addr    = 9'd0;
+    ff_up_addr   = 11'd0;
+    ff_down_addr = 11'd0;
     tok_emb_addr = 11'd0;
 
     fd = $fopen("/home/user/red_eyes_is_all_you_need/logs/tb_weight_store.log", "w");
@@ -178,7 +184,7 @@ module tb_weight_store;
     // plus BRAM output reg
     for (i = 0; i < 4; i = i + 1) begin
       layer    = i[1:0];
-      qkv_addr = 12'd0;
+      qkv_addr = 11'd0;
       @(posedge clk);
       @(posedge clk);
       #1;
@@ -191,23 +197,23 @@ module tb_weight_store;
         $fwrite(fd, "OK   tensor %0d  addr=0  data=0x%02x\n", qkv_idx[i], qkv_data[7:0]);
       end
 
-      qkv_addr = 12'd3071;
+      qkv_addr = 11'd1535;
       @(posedge clk);
       @(posedge clk);
       #1;
-      if (qkv_data[127:120] !== qkv_last[i]) begin
-        $display("FAIL tensor %0d last: got 0x%02x, exp 0x%02x", qkv_idx[i], qkv_data[127:120], qkv_last[i]);
-        $fwrite(fd, "FAIL tensor %0d last: got 0x%02x, exp 0x%02x\n", qkv_idx[i], qkv_data[127:120], qkv_last[i]);
+      if (qkv_data[255:248] !== qkv_last[i]) begin
+        $display("FAIL tensor %0d last: got 0x%02x, exp 0x%02x", qkv_idx[i], qkv_data[255:248], qkv_last[i]);
+        $fwrite(fd, "FAIL tensor %0d last: got 0x%02x, exp 0x%02x\n", qkv_idx[i], qkv_data[255:248], qkv_last[i]);
         errors = errors + 1;
       end else begin
-        $display("OK   tensor %0d  addr=%0d  data=0x%02x", qkv_idx[i], qkv_addr, qkv_data[127:120]);
-        $fwrite(fd, "OK   tensor %0d  addr=%0d  data=0x%02x\n", qkv_idx[i], qkv_addr, qkv_data[127:120]);
+        $display("OK   tensor %0d  addr=%0d  data=0x%02x", qkv_idx[i], qkv_addr, qkv_data[255:248]);
+        $fwrite(fd, "OK   tensor %0d  addr=%0d  data=0x%02x\n", qkv_idx[i], qkv_addr, qkv_data[255:248]);
       end
     end
 
     for (i = 0; i < 4; i = i + 1) begin
       layer     = i[1:0];
-      proj_addr = 10'd0;
+      proj_addr = 9'd0;
       @(posedge clk);
       @(posedge clk);
       #1;
@@ -220,23 +226,23 @@ module tb_weight_store;
         $fwrite(fd, "OK   tensor %0d  addr=0  data=0x%02x\n", proj_idx[i], proj_data[7:0]);
       end
 
-      proj_addr = 10'd1023;
+      proj_addr = 9'd511;
       @(posedge clk);
       @(posedge clk);
       #1;
-      if (proj_data[127:120] !== proj_last[i]) begin
-        $display("FAIL tensor %0d last: got 0x%02x, exp 0x%02x", proj_idx[i], proj_data[127:120], proj_last[i]);
-        $fwrite(fd, "FAIL tensor %0d last: got 0x%02x, exp 0x%02x\n", proj_idx[i], proj_data[127:120], proj_last[i]);
+      if (proj_data[255:248] !== proj_last[i]) begin
+        $display("FAIL tensor %0d last: got 0x%02x, exp 0x%02x", proj_idx[i], proj_data[255:248], proj_last[i]);
+        $fwrite(fd, "FAIL tensor %0d last: got 0x%02x, exp 0x%02x\n", proj_idx[i], proj_data[255:248], proj_last[i]);
         errors = errors + 1;
       end else begin
-        $display("OK   tensor %0d  addr=%0d  data=0x%02x", proj_idx[i], proj_addr, proj_data[127:120]);
-        $fwrite(fd, "OK   tensor %0d  addr=%0d  data=0x%02x\n", proj_idx[i], proj_addr, proj_data[127:120]);
+        $display("OK   tensor %0d  addr=%0d  data=0x%02x", proj_idx[i], proj_addr, proj_data[255:248]);
+        $fwrite(fd, "OK   tensor %0d  addr=%0d  data=0x%02x\n", proj_idx[i], proj_addr, proj_data[255:248]);
       end
     end
 
     for (i = 0; i < 4; i = i + 1) begin
       layer      = i[1:0];
-      ff_up_addr = 12'd0;
+      ff_up_addr = 11'd0;
       @(posedge clk);
       @(posedge clk);
       #1;
@@ -249,23 +255,23 @@ module tb_weight_store;
         $fwrite(fd, "OK   tensor %0d  addr=0  data=0x%02x\n", ff_up_idx[i], ff_up_data[7:0]);
       end
 
-      ff_up_addr = 12'd4095;
+      ff_up_addr = 11'd2047;
       @(posedge clk);
       @(posedge clk);
       #1;
-      if (ff_up_data[127:120] !== ff_up_last[i]) begin
-        $display("FAIL tensor %0d last: got 0x%02x, exp 0x%02x", ff_up_idx[i], ff_up_data[127:120], ff_up_last[i]);
-        $fwrite(fd, "FAIL tensor %0d last: got 0x%02x, exp 0x%02x\n", ff_up_idx[i], ff_up_data[127:120], ff_up_last[i]);
+      if (ff_up_data[255:248] !== ff_up_last[i]) begin
+        $display("FAIL tensor %0d last: got 0x%02x, exp 0x%02x", ff_up_idx[i], ff_up_data[255:248], ff_up_last[i]);
+        $fwrite(fd, "FAIL tensor %0d last: got 0x%02x, exp 0x%02x\n", ff_up_idx[i], ff_up_data[255:248], ff_up_last[i]);
         errors = errors + 1;
       end else begin
-        $display("OK   tensor %0d  addr=%0d  data=0x%02x", ff_up_idx[i], ff_up_addr, ff_up_data[127:120]);
-        $fwrite(fd, "OK   tensor %0d  addr=%0d  data=0x%02x\n", ff_up_idx[i], ff_up_addr, ff_up_data[127:120]);
+        $display("OK   tensor %0d  addr=%0d  data=0x%02x", ff_up_idx[i], ff_up_addr, ff_up_data[255:248]);
+        $fwrite(fd, "OK   tensor %0d  addr=%0d  data=0x%02x\n", ff_up_idx[i], ff_up_addr, ff_up_data[255:248]);
       end
     end
 
     for (i = 0; i < 4; i = i + 1) begin
       layer        = i[1:0];
-      ff_down_addr = 12'd0;
+      ff_down_addr = 11'd0;
       @(posedge clk);
       @(posedge clk);
       #1;
@@ -278,17 +284,17 @@ module tb_weight_store;
         $fwrite(fd, "OK   tensor %0d  addr=0  data=0x%02x\n", ff_down_idx[i], ff_down_data[7:0]);
       end
 
-      ff_down_addr = 12'd4095;
+      ff_down_addr = 11'd2047;
       @(posedge clk);
       @(posedge clk);
       #1;
-      if (ff_down_data[127:120] !== ff_down_last[i]) begin
-        $display("FAIL tensor %0d last: got 0x%02x, exp 0x%02x", ff_down_idx[i], ff_down_data[127:120], ff_down_last[i]);
-        $fwrite(fd, "FAIL tensor %0d last: got 0x%02x, exp 0x%02x\n", ff_down_idx[i], ff_down_data[127:120], ff_down_last[i]);
+      if (ff_down_data[255:248] !== ff_down_last[i]) begin
+        $display("FAIL tensor %0d last: got 0x%02x, exp 0x%02x", ff_down_idx[i], ff_down_data[255:248], ff_down_last[i]);
+        $fwrite(fd, "FAIL tensor %0d last: got 0x%02x, exp 0x%02x\n", ff_down_idx[i], ff_down_data[255:248], ff_down_last[i]);
         errors = errors + 1;
       end else begin
-        $display("OK   tensor %0d  addr=%0d  data=0x%02x", ff_down_idx[i], ff_down_addr, ff_down_data[127:120]);
-        $fwrite(fd, "OK   tensor %0d  addr=%0d  data=0x%02x\n", ff_down_idx[i], ff_down_addr, ff_down_data[127:120]);
+        $display("OK   tensor %0d  addr=%0d  data=0x%02x", ff_down_idx[i], ff_down_addr, ff_down_data[255:248]);
+        $fwrite(fd, "OK   tensor %0d  addr=%0d  data=0x%02x\n", ff_down_idx[i], ff_down_addr, ff_down_data[255:248]);
       end
     end
 

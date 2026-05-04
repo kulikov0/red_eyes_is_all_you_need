@@ -26,12 +26,13 @@ module attention (
   output reg  [15:0]   res_wdata_o,
 
   // Per-tensor weight buses: qkv and proj have their own dedicated banks
-  // co-located with this matvec instance, no shared addr/data mux
-  output wire [11:0]   qkv_addr_o,
-  input  wire [127:0]  qkv_data_i,
+  // co-located with this matvec instance, no shared addr/data mux. Each
+  // bank emits 256-bit packed words for matvec_fp16_w32
+  output wire [10:0]   qkv_addr_o,
+  input  wire [255:0]  qkv_data_i,
   input  wire [15:0]   qkv_scale_i,
-  output wire [9:0]    proj_addr_o,
-  input  wire [127:0]  proj_data_i,
+  output wire [8:0]    proj_addr_o,
+  input  wire [255:0]  proj_data_i,
   input  wire [15:0]   proj_scale_i,
 
   // K cache addr is separate from V so score and AV can run in parallel.
@@ -120,7 +121,7 @@ module attention (
   wire [15:0] qkv_res_wdata;
   wire        qkv_done;
 
-  matvec_fp16_w16 #(.IN_DIM(128), .OUT_DIM(384)) u_qkv (
+  matvec_fp16_w32 #(.IN_DIM(128), .OUT_DIM(384)) u_qkv (
     .clk_i        (clk_i),
     .rst_i        (rst_i),
     .start_i      (qkv_start),
@@ -149,7 +150,7 @@ module attention (
   wire [15:0]  proj_res_wdata;
   wire         proj_done;
 
-  matvec_fp16_w16 #(.IN_DIM(128), .OUT_DIM(128)) u_proj (
+  matvec_fp16_w32 #(.IN_DIM(128), .OUT_DIM(128)) u_proj (
     .clk_i        (clk_i),
     .rst_i        (rst_i),
     .start_i      (proj_start),

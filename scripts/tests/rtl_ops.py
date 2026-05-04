@@ -66,11 +66,25 @@ def load_hex(path):
 def load_hex_w16(path, in_dim):
     vals = load_hex(path)
     bytes_out = [0] * (len(vals) * 16)
-    for j, w in enumerate(vals):
-        g = j // in_dim
-        c = j % in_dim
-        for L in range(16):
-            bytes_out[(16 * g + L) * in_dim + c] = (w >> (L * 8)) & 0xFF
+    for j, word in enumerate(vals):
+        group_idx = j // in_dim
+        col       = j % in_dim
+        for lane in range(16):
+            bytes_out[(16 * group_idx + lane) * in_dim + col] = (word >> (lane * 8)) & 0xFF
+    return bytes_out
+
+
+# 32-way packed: 256-bit word pairs (col, col+IN/2) for the same 16 rows
+def load_hex_w32(path, in_dim):
+    vals = load_hex(path)
+    half = in_dim // 2
+    bytes_out = [0] * (len(vals) * 32)
+    for j, word in enumerate(vals):
+        group_idx = j // half
+        col       = j % half
+        for lane in range(16):
+            bytes_out[(16 * group_idx + lane) * in_dim + col]        = (word >> (lane * 8))       & 0xFF
+            bytes_out[(16 * group_idx + lane) * in_dim + col + half] = (word >> (lane * 8 + 128)) & 0xFF
     return bytes_out
 
 
@@ -554,13 +568,31 @@ def rtl_gelu_fp16(x_bits, breaks, slopes, icepts):
 def rtl_matvec_fp16(in_vec_fp16, weights_u8, out_dim, in_dim, scale_bits):
     out = []
     for r in range(out_dim):
-        acc = 0x0000  # fp16 zero
+        acc = 0x0000
         for c in range(in_dim):
             w_int = to_signed8(weights_u8[r * in_dim + c])
             w_fp16 = fp16_from_int(w_int)
             w_dequant = fp16_mul(w_fp16, scale_bits)
             prod = fp16_mul(w_dequant, in_vec_fp16[c])
             acc = fp16_add(acc, prod)
+        out.append(acc)
+    return out
+
+
+def rtl_matvec_fp16_w32(in_vec_fp16, weights_u8, out_dim, in_dim, scale_bits):
+    half = in_dim // 2
+    out = []
+    for r in range(out_dim):
+        acc = 0x0000
+        for c in range(half):
+            w_a_int = to_signed8(weights_u8[r * in_dim + c])
+            w_b_int = to_signed8(weights_u8[r * in_dim + c + half])
+            wa = fp16_mul(fp16_from_int(w_a_int), scale_bits)
+            wb = fp16_mul(fp16_from_int(w_b_int), scale_bits)
+            mul_a = fp16_mul(wa, in_vec_fp16[c])
+            mul_b = fp16_mul(wb, in_vec_fp16[c + half])
+            sum_ab = fp16_add(mul_a, mul_b)
+            acc = fp16_add(acc, sum_ab)
         out.append(acc)
     return out
 
@@ -670,8 +702,7 @@ def rtl_attention_fp16(x_fp16, layer, pos, kv_cache, qkv_w, proj_w,
                           lut0, lut1, qkv_scale_bits, proj_scale_bits):
     INV_SQRT_DK = 0x3400  # 0.25 = 1/sqrt(16)
 
-    # QKV projection: matvec_fp16
-    qkv = rtl_matvec_fp16(x_fp16, qkv_w, 384, DIM, qkv_scale_bits)
+    qkv = rtl_matvec_fp16_w32(x_fp16, qkv_w, 384, DIM, qkv_scale_bits)
 
     q_fp16 = qkv[0:128]
     k_fp16 = qkv[128:256]
@@ -723,7 +754,7 @@ def rtl_attention_fp16(x_fp16, layer, pos, kv_cache, qkv_w, proj_w,
                 p += 4
             head_out[h * HEAD_DIM + d] = acc
 
-    return rtl_matvec_fp16(head_out, proj_w, DIM, DIM, proj_scale_bits)
+    return rtl_matvec_fp16_w32(head_out, proj_w, DIM, DIM, proj_scale_bits)
 
 
 # Dequant LN gamma/beta bytes to fp16 using scale
@@ -762,14 +793,11 @@ def rtl_transformer_layer_fp16(x_fp16, layer, pos, kv_cache,
     beta2_fp16 = _dequant_ln_fp16(beta2_bytes, scales['ln2_beta'])
     ln2_out, _, _, _ = rtl_layernorm_fp16(res1, gamma2_fp16, beta2_fp16, isqrt_lut)
 
-    # FF_up: matvec_fp16 (128->512)
-    ff_up_out = rtl_matvec_fp16(ln2_out, ff_up_w, 512, DIM, scales['ff_up'])
+    ff_up_out = rtl_matvec_fp16_w32(ln2_out, ff_up_w, 512, DIM, scales['ff_up'])
 
-    # GELU: fp16 PWL per element
     gelu_out = [rtl_gelu_fp16(ff_up_out[i], breaks, slopes, icepts) for i in range(512)]
 
-    # FF_down: matvec_fp16 (512->128)
-    ff_down_out = rtl_matvec_fp16(gelu_out, ff_down_w, DIM, 512, scales['ff_down'])
+    ff_down_out = rtl_matvec_fp16_w32(gelu_out, ff_down_w, DIM, 512, scales['ff_down'])
 
     # Residual 2: fp16 add
     return [fp16_add(ff_down_out[i], res1[i]) for i in range(DIM)]

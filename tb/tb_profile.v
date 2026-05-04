@@ -14,9 +14,14 @@ module tb_profile;
   wire [15:0] w_addr;
   wire [7:0]  w_data;
   wire [1:0]   layer_idx;
-  wire [11:0]  qkv_addr,    ff_up_addr,    ff_down_addr;
-  wire [9:0]   proj_addr;
-  wire [127:0] qkv_data,    proj_data,     ff_up_data,   ff_down_data;
+  wire [10:0]  qkv_addr;
+  wire [10:0]  ff_up_addr;
+  wire [10:0]  ff_down_addr;
+  wire [8:0]   proj_addr;
+  wire [255:0] qkv_data;
+  wire [255:0] proj_data;
+  wire [255:0] ff_up_data;
+  wire [255:0] ff_down_data;
   wire [15:0]  qkv_scale,   proj_scale,    ff_up_scale,  ff_down_scale;
   wire [10:0]  tok_emb_addr;
   wire [127:0] tok_emb_data;
@@ -38,10 +43,14 @@ module tb_profile;
   wire [15:0] w_scale;
 
   weight_store         u_ws         (.clk_i(clk), .tensor_sel_i(w_sel), .addr_i(w_addr[14:0]), .data_o(w_data), .scale_o(w_scale));
-  weight_store_qkv     u_ws_qkv     (.clk_i(clk), .layer_i(layer_idx), .addr_i(qkv_addr), .data_o(qkv_data), .scale_o(qkv_scale));
-  weight_store_proj    u_ws_proj    (.clk_i(clk), .layer_i(layer_idx), .addr_i(proj_addr), .data_o(proj_data), .scale_o(proj_scale));
-  weight_store_ff_up   u_ws_ff_up   (.clk_i(clk), .layer_i(layer_idx), .addr_i(ff_up_addr), .data_o(ff_up_data), .scale_o(ff_up_scale));
-  weight_store_ff_down u_ws_ff_down (.clk_i(clk), .layer_i(layer_idx), .addr_i(ff_down_addr), .data_o(ff_down_data), .scale_o(ff_down_scale));
+  weight_store_qkv     u_ws_qkv     (.clk_i(clk), .layer_i(layer_idx),
+    .addr_i(qkv_addr), .data_o(qkv_data), .scale_o(qkv_scale));
+  weight_store_proj    u_ws_proj    (.clk_i(clk), .layer_i(layer_idx),
+    .addr_i(proj_addr), .data_o(proj_data), .scale_o(proj_scale));
+  weight_store_ff_up   u_ws_ff_up   (.clk_i(clk), .layer_i(layer_idx),
+    .addr_i(ff_up_addr), .data_o(ff_up_data), .scale_o(ff_up_scale));
+  weight_store_ff_down u_ws_ff_down (.clk_i(clk), .layer_i(layer_idx),
+    .addr_i(ff_down_addr), .data_o(ff_down_data), .scale_o(ff_down_scale));
   weight_store_tok_emb u_ws_tok_emb (.clk_i(clk), .addr_i(tok_emb_addr), .data_o(tok_emb_data), .scale_o(tok_emb_scale));
 
   kv_cache u_k_cache (.clk_i(clk), .layer_i(k_layer), .head_i(k_head), .pos_i(k_pos), .dim_i(k_dim), .we_i(k_we), .wdata_i(k_wdata), .rdata_o(k_rdata));
@@ -51,10 +60,10 @@ module tb_profile;
     .clk_i(clk), .rst_i(rst), .token_i(token), .start_i(start), .generate_i(gen_mode),
     .w_sel_o(w_sel), .w_addr_o(w_addr), .w_data_i(w_data), .w_scale_i(w_scale),
     .layer_idx_o(layer_idx),
-    .qkv_addr_o(qkv_addr), .qkv_data_i(qkv_data), .qkv_scale_i(qkv_scale),
-    .proj_addr_o(proj_addr), .proj_data_i(proj_data), .proj_scale_i(proj_scale),
-    .ff_up_addr_o(ff_up_addr), .ff_up_data_i(ff_up_data), .ff_up_scale_i(ff_up_scale),
-    .ff_down_addr_o(ff_down_addr), .ff_down_data_i(ff_down_data), .ff_down_scale_i(ff_down_scale),
+    .qkv_addr_o (qkv_addr), .qkv_data_i (qkv_data), .qkv_scale_i(qkv_scale),
+    .proj_addr_o (proj_addr), .proj_data_i (proj_data), .proj_scale_i(proj_scale),
+    .ff_up_addr_o (ff_up_addr), .ff_up_data_i (ff_up_data), .ff_up_scale_i(ff_up_scale),
+    .ff_down_addr_o (ff_down_addr), .ff_down_data_i (ff_down_data), .ff_down_scale_i(ff_down_scale),
     .tok_emb_addr_o(tok_emb_addr), .tok_emb_data_i(tok_emb_data), .tok_emb_scale_i(tok_emb_scale),
     .k_we_o(k_we), .k_wdata_o(k_wdata), .k_layer_o(k_layer), .k_head_o(k_head), .k_pos_o(k_pos), .k_dim_o(k_dim), .k_rdata_i(k_rdata),
     .v_we_o(v_we), .v_wdata_o(v_wdata), .v_layer_o(v_layer), .v_head_o(v_head), .v_pos_o(v_pos), .v_dim_o(v_dim), .v_rdata_i(v_rdata),

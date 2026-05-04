@@ -28,17 +28,17 @@ module transformer_top (
   // Per-tensor weight buses to dedicated banks. layer_idx_o picks which
   // layer's data each bank returns
   output wire [1:0]   layer_idx_o,
-  output wire [11:0]  qkv_addr_o,
-  input  wire [127:0] qkv_data_i,
+  output wire [10:0]  qkv_addr_o,
+  input  wire [255:0] qkv_data_i,
   input  wire [15:0]  qkv_scale_i,
-  output wire [9:0]   proj_addr_o,
-  input  wire [127:0] proj_data_i,
+  output wire [8:0]   proj_addr_o,
+  input  wire [255:0] proj_data_i,
   input  wire [15:0]  proj_scale_i,
-  output wire [11:0]  ff_up_addr_o,
-  input  wire [127:0] ff_up_data_i,
+  output wire [10:0]  ff_up_addr_o,
+  input  wire [255:0] ff_up_data_i,
   input  wire [15:0]  ff_up_scale_i,
-  output wire [11:0]  ff_down_addr_o,
-  input  wire [127:0] ff_down_data_i,
+  output wire [10:0]  ff_down_addr_o,
+  input  wire [255:0] ff_down_data_i,
   input  wire [15:0]  ff_down_scale_i,
 
   // Dedicated tok_emb bus shared between embedding and head_proj

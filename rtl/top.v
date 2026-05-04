@@ -116,9 +116,14 @@ module top (
 
   // Per-tensor weight banks. Each bank co-locates with its consumer's pblock
   wire [1:0]   layer_idx;
-  wire [11:0]  qkv_addr,    ff_up_addr,    ff_down_addr;
-  wire [9:0]   proj_addr;
-  wire [127:0] qkv_data,    proj_data,     ff_up_data,   ff_down_data;
+  wire [10:0]  qkv_addr;
+  wire [10:0]  ff_up_addr;
+  wire [10:0]  ff_down_addr;
+  wire [8:0]   proj_addr;
+  wire [255:0] qkv_data;
+  wire [255:0] proj_data;
+  wire [255:0] ff_up_data;
+  wire [255:0] ff_down_data;
   wire [15:0]  qkv_scale,   proj_scale,    ff_up_scale,  ff_down_scale;
   wire [10:0]  tok_emb_addr;
   wire [127:0] tok_emb_data;

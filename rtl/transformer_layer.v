@@ -32,17 +32,17 @@ module transformer_layer (
   input  wire [15:0]   w_scale_i,
 
   // Per-tensor weight buses, each backed by its own dedicated bank
-  output wire [11:0]   qkv_addr_o,
-  input  wire [127:0]  qkv_data_i,
+  output wire [10:0]   qkv_addr_o,
+  input  wire [255:0]  qkv_data_i,
   input  wire [15:0]   qkv_scale_i,
-  output wire [9:0]    proj_addr_o,
-  input  wire [127:0]  proj_data_i,
+  output wire [8:0]    proj_addr_o,
+  input  wire [255:0]  proj_data_i,
   input  wire [15:0]   proj_scale_i,
-  output wire [11:0]   ff_up_addr_o,
-  input  wire [127:0]  ff_up_data_i,
+  output wire [10:0]   ff_up_addr_o,
+  input  wire [255:0]  ff_up_data_i,
   input  wire [15:0]   ff_up_scale_i,
-  output wire [11:0]   ff_down_addr_o,
-  input  wire [127:0]  ff_down_data_i,
+  output wire [10:0]   ff_down_addr_o,
+  input  wire [255:0]  ff_down_data_i,
   input  wire [15:0]   ff_down_scale_i,
 
   // K cache (fp16)
@@ -210,7 +210,7 @@ module transformer_layer (
   wire [15:0]  ff_up_res_wdata;
   wire         ff_up_done;
 
-  matvec_fp16_w16 #(.IN_DIM(128), .OUT_DIM(512)) u_ff_up (
+  matvec_fp16_w32 #(.IN_DIM(128), .OUT_DIM(512)) u_ff_up (
     .clk_i        (clk_i),
     .rst_i        (rst_i),
     .start_i      (ff_up_start),
@@ -234,7 +234,7 @@ module transformer_layer (
   wire [15:0]  ff_down_res_wdata;
   wire         ff_down_done;
 
-  matvec_fp16_w16 #(.IN_DIM(512), .OUT_DIM(128)) u_ff_down (
+  matvec_fp16_w32 #(.IN_DIM(512), .OUT_DIM(128)) u_ff_down (
     .clk_i        (clk_i),
     .rst_i        (rst_i),
     .start_i      (ff_down_start),

@@ -21,11 +21,11 @@ module tb_attention_stress;
       res_reg[res_waddr] <= res_wdata;
   end
 
-  wire [11:0]  qkv_addr;
-  wire [127:0] qkv_data;
+  wire [10:0]  qkv_addr;
+  wire [255:0] qkv_data;
   wire [15:0]  qkv_scale;
-  wire [9:0]   proj_addr;
-  wire [127:0] proj_data;
+  wire [8:0]   proj_addr;
+  wire [255:0] proj_data;
   wire [15:0]  proj_scale;
 
   wire [1:0]  k_layer, v_layer;
